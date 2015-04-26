@@ -414,13 +414,14 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                             keys[check_key] = ""
 
         if len(keys_to_remove) == 0:
-            return place_dictionary
+            return ""
         else:
-            new_dict = place_dictionary.copy()
-            for key in keys_to_remove:
-                new_dict[key] = ""
-            return new_dict
+            omit_string = ""
 
+            for key in keys_to_remove:
+                omit_string = place_dictionary[key] if not omit_string else ", " + place_dictionary[key]
+                place_dictionary[key] = ""
+            return omit_string
 
     def _is_extra_info_in_place_names(self, place_title, place_dictionary):
         """
