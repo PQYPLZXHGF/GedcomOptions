@@ -76,7 +76,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
     """
     _address_format = ["%street, %custom, %unknown, %building, %department, %farm, %neighborhood",
                        "%hamlet, %village, %borough, %locality",
-                       "%code+-[%town, %city, %municipality], %parish",
+                       "[%code ]+-[%town, %city, %municipality], %parish",
                        "%district, %region, %province, %county, %state",
                        "%country",
                        ""]
@@ -396,7 +396,6 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         return place_dict
 
     def _remove_repetitive_places(self, place_dictionary, address_format):
-        ret = None
         keys = dict()
         keys_to_remove = []
 
@@ -404,14 +403,17 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             keys.update(self.parser.get_parsed_keys(place_dictionary, address_line))
 
         for key, value in keys.items():
-            for check_key, check_value in keys.items():
-                if key != check_key:
-                    if value and check_value:
-                        test = " " + value + " "
-                        check_test = " " + check_value + " "
-                        if test.find(check_test) >= 0:
-                            keys_to_remove.append(check_key)
-                            keys[check_key] = ""
+            if key not in keys_to_remove:
+                for check_key, check_value in keys.items():
+                    if value == check_value and key != check_key:
+                        print(key + " is same as " + check_key)
+                    if key != check_key:
+                        if value and check_value:
+                            test = " " + value + " "
+                            check_test = " " + check_value + " "
+                            if test.find(check_test) >= 0:
+                                keys_to_remove.append(check_key)
+                                keys[check_key] = ""
 
         if len(keys_to_remove) == 0:
             return ""
@@ -419,7 +421,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             omit_string = ""
 
             for key in keys_to_remove:
-                omit_string = place_dictionary[key] if not omit_string else ", " + place_dictionary[key]
+                omit_string = place_dictionary[key] if not omit_string else omit_string + ", " + place_dictionary[key]
                 place_dictionary[key] = ""
             return omit_string
 
