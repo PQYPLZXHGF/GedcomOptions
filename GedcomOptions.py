@@ -76,7 +76,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
     """
     _address_format = ["%street, %custom, %unknown, %building, %department, %farm, %neighborhood",
                        "%hamlet, %village, %borough, %locality",
-                       "%code [%town, %city, %municipality], %parish",
+                       "%code+-[%town, %city, %municipality], %parish",
                        "%district, %region, %province, %county, %state",
                        "%country",
                        ""]
@@ -340,6 +340,9 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             if self.extended_pe_addresses:
                 #parser = FormatStringParser(self._place_keys)
 
+                if self.avoid_repetition_in_pe_addresses:
+                    self._remove_repetitive_places(placetree, self._address_format)
+
                 address1 = self.parser.parse(placetree, self._address_format[0])
                 address2 = self.parser.parse(placetree, self._address_format[1])
                 city = self.parser.parse(placetree, self._address_format[2])
@@ -392,25 +395,32 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             place_dict[key] = value
         return place_dict
 
-    def _remove_repetitive_places(self, address_format):
+    def _remove_repetitive_places(self, place_dictionary, address_format):
         ret = None
-        for place_name in address_format:
-            if place_name:
-                if ret:
+        keys = dict()
+        keys_to_remove = []
 
-                    # omit place name that already exists (trying to avoid repetition)
-                    # (--)
-                    # Experimental feature
-                    if self.avoid_repetition_in_pe_addresses:
-                        test = " " + place_name + " "
-                        src = " " + ret + " "
-                        if src.find(test) >= 0:
-                            continue   # ok, omit
+        for address_line in address_format:
+            keys.update(self.parser.get_parsed_keys(place_dictionary, address_line))
 
-                    ret = ret + ", " + place_name
-                else:
-                    ret = place_name
-        return ret
+        for key, value in keys.items():
+            for check_key, check_value in keys.items():
+                if key != check_key:
+                    if value and check_value:
+                        test = " " + value + " "
+                        check_test = " " + check_value + " "
+                        if test.find(check_test) >= 0:
+                            keys_to_remove.append(check_key)
+                            keys[check_key] = ""
+
+        if len(keys_to_remove) == 0:
+            return place_dictionary
+        else:
+            new_dict = place_dictionary.copy()
+            for key in keys_to_remove:
+                new_dict[key] = ""
+            return new_dict
+
 
     def _is_extra_info_in_place_names(self, place_title, place_dictionary):
         """
@@ -418,7 +428,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         """
         ret = False
         if place_title:
-            for key, place_name in list_of_places.items():
+            for key, place_name in place_dictionary.items():
                 if place_name:
                     if place_title.find(place_name) < 0:
                         ret = True
@@ -526,9 +536,9 @@ class GedcomWriterOptionBox(WriterOptionBox):
         self.get_coordinates_check.set_active(1)
         self.export_only_useful_pe_addresses_check.set_active(1)
         self.extended_pe_addresses_check.set_active(1)
-        self.avoid_repetition_in_pe_addresses_check.set_active(0)
-        self.include_tng_place_levels_check.set_active(0)
-        self.omit_borough_from_address_check.set_active(0)
+        self.avoid_repetition_in_pe_addresses_check.set_active(1)
+        self.include_tng_place_levels_check.set_active(1)
+        self.omit_borough_from_address_check.set_active(1)
         self.move_patronymics_check.set_active(1)
 
         # Add to gui:
@@ -578,6 +588,8 @@ def export_data(database, filename, user, option_box=None):
     except DatabaseError as msg:
         user.notify_db_error(_("Export failed"), msg)
     return ret
+
+
 
 #!/usr/bin/python
 #
@@ -1199,12 +1211,12 @@ class FormatStringParser():
         skip_next = False
         index = 0
         new_element_list = []
+        prev_element = None
 
         for element in element_list:
             skip_this = False
             if not skip_next:
-                if index > 0 and index < len(element_list) - 1:
-                    prev_element = new_element_list[-1]
+                if index > 0 and index < len(element_list) - 1 and prev_element:
                     next_element = element_list[index+1]
                     if element.type == ElementType.OPTIONOPERATOR:
                         if prev_element.parsed and next_element.parsed:
@@ -1229,6 +1241,7 @@ class FormatStringParser():
                                 skip_this = True
                 if not skip_this:
                         new_element_list.append(element)
+                        prev_element = element
             else:
                 skip_next = False
 
