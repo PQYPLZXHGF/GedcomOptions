@@ -1,3 +1,4 @@
+# *-* coding: utf-8 *-*
 #
 # Gramps - a GTK+/GNOME based genealogy program
 #
@@ -70,13 +71,19 @@ except ValueError:
     _trans = glocale.translation
 _ = _trans.gettext
 
+#------------------------------------------------------------
+#
+# MyClass
+#
+#------------------------------------------------------------
+
 class GedcomWriterExtension(exportgedcom.GedcomWriter):
     """
     GedcomWriter extension
     """
     _address_format = ["%street, %custom, %unknown, %building, %department, %farm, %neighborhood",
                        "%hamlet, %village, %borough, %locality",
-                       "[%code ]+-[%town, %city, %municipality], %parish",
+                       "[%CODE ]+-[%town, %city, %municipality], %parish",
                        "%district, %region, %province, %county, %state",
                        "%country",
                        ""]
@@ -88,32 +95,31 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                            "%country",
                            "%code"]
 
-
     _place_keys = ['street', 'department', 'building', 'farm', 'neighborhood', 'hamlet', 'village',
                    'borough', 'locality', 'town', 'city', 'municipality', 'parish', 'district',
                    'region', 'province', 'county', 'state', 'country', 'custom', 'unknown', 'code']
 
     _place_types = dict(street=PlaceType.STREET,
-                       department=PlaceType.DEPARTMENT,
-                       building=PlaceType.BUILDING,
-                       farm=PlaceType.FARM,
-                       neighborhood=PlaceType.NEIGHBORHOOD,
-                       hamlet=PlaceType.HAMLET,
-                       village=PlaceType.VILLAGE,
-                       borough=PlaceType.BOROUGH,
-                       locality=PlaceType.LOCALITY,
-                       town=PlaceType.TOWN,
-                       city=PlaceType.CITY,
-                       municipality=PlaceType.MUNICIPALITY,
-                       parish=PlaceType.PARISH,
-                       district=PlaceType.DISTRICT,
-                       province=PlaceType.PROVINCE,
-                       region=PlaceType.REGION,
-                       county=PlaceType.COUNTY,
-                       state=PlaceType.STATE,
-                       country=PlaceType.COUNTRY,
-                       custom=PlaceType.CUSTOM,
-                       unknown=PlaceType.UNKNOWN)
+                        department=PlaceType.DEPARTMENT,
+                        building=PlaceType.BUILDING,
+                        farm=PlaceType.FARM,
+                        neighborhood=PlaceType.NEIGHBORHOOD,
+                        hamlet=PlaceType.HAMLET,
+                        village=PlaceType.VILLAGE,
+                        borough=PlaceType.BOROUGH,
+                        locality=PlaceType.LOCALITY,
+                        town=PlaceType.TOWN,
+                        city=PlaceType.CITY,
+                        municipality=PlaceType.MUNICIPALITY,
+                        parish=PlaceType.PARISH,
+                        district=PlaceType.DISTRICT,
+                        province=PlaceType.PROVINCE,
+                        region=PlaceType.REGION,
+                        county=PlaceType.COUNTY,
+                        state=PlaceType.STATE,
+                        country=PlaceType.COUNTRY,
+                        custom=PlaceType.CUSTOM,
+                        unknown=PlaceType.UNKNOWN)
 
     # 'accuracy' of coordinates will be determined by place types which are groupped as:
     _address1_level_place_types = [PlaceType.STREET, PlaceType.DEPARTMENT, PlaceType.BUILDING,
@@ -147,7 +153,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             self.move_patronymics = 1
 
         self.parser = FormatStringParser(self._place_keys)
-
+        print("Gedcom Options " + __version__ + " loaded")
 
     def _person_name(self, name, attr_nick):
         """
@@ -377,7 +383,8 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         self._note_references(place.get_note_list(), level+1)
 
     def generate_place_dictionary(self, place):
-        db = self.dbstate.get_database()
+        #db = self.dbstate.get_database() -- works only in addresspreview
+        db = self.dbase
         location = get_main_location(db, place)
         place_dict = dict()
 
@@ -521,9 +528,9 @@ class GedcomWriterOptionBox(WriterOptionBox):
 
         # Make options:
         self.export_only_useful_pe_addresses_check = \
-            Gtk.CheckButton(_("Omit addresses that don't have any info in addition to place title"))
+            Gtk.CheckButton(_("Omit addresses that have no extra info in addition to place title"))
         self.extended_pe_addresses_check = \
-            Gtk.CheckButton(_("Include all kind of place types in place event addresses (not only street/locality)"))
+            Gtk.CheckButton(_("Include more place types in place event addresses"))
         self.avoid_repetition_in_pe_addresses_check = \
             Gtk.CheckButton(_("Try to avoid repetition in address fields (experimental)"))
         self.omit_borough_from_address_check = \
