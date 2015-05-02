@@ -21,17 +21,17 @@
 
 # $Id: $
 
-#------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 #
 # Modified the GEDCOM Export for TNG -alpha
 #
-#------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 
 register(EXPORT,
     id    = 'GEDCOM Options',
     name  = _("GEDCOM Options"),
     name_accell  = _("GEDCOM Options 0.4 alpha"),
-    description =  _("Expansion to default GedCom Export Module."),
+    description =  _("Expansion to default GedCom export module."),
     version = '0.4.1',
     gramps_target_version = '4.1',
     status = UNSTABLE,
@@ -39,6 +39,6 @@ register(EXPORT,
     export_function = 'export_data',
     export_options = 'GedcomWriterOptionBox',
     export_options_title = _('GEDCOM Options'),
-    extension = "ged",
+    extension = "ged"
 )
 
