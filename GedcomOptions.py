@@ -63,7 +63,7 @@ from gramps.gen.utils.location import get_main_location
 from gramps.gen.display.place import displayer as place_displayer
 from gramps.gen.lib.date import Today
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 try:
     _trans = glocale.get_addon_translator(__file__)
@@ -121,7 +121,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                         custom=PlaceType.CUSTOM,
                         unknown=PlaceType.UNKNOWN)
 
-    # 'accuracy' of coordinates will be determined by place types which are groupped as:
+    # 'accuracy' of coordinates will be determined by place types which are grouped as:
     _address1_level_place_types = [PlaceType.STREET, PlaceType.DEPARTMENT, PlaceType.BUILDING,
                                    PlaceType.FARM, PlaceType.NEIGHBORHOOD, PlaceType.HAMLET]
     _address2_level_place_types = [PlaceType.VILLAGE, PlaceType.BOROUGH, PlaceType.LOCALITY]
@@ -129,7 +129,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
     _county_level_place_types = [PlaceType.DISTRICT, PlaceType.COUNTY, PlaceType.REGION]
     _state_level_place_types = [PlaceType.STATE]
     _country_level_place_types = [PlaceType.COUNTRY]
-    _unknown_level_place_types = [PlaceType.UNKNOWN, PlaceType.CUSTOM] # will be interpreted with highest accuracy
+    _unknown_level_place_types = [PlaceType.UNKNOWN, PlaceType.CUSTOM]  # will be interpreted with highest accuracy
 
     #parser = FormatStringParser()
 
@@ -172,7 +172,6 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             super(GedcomWriterExtension, self)._person_name(name, attr_nick)
         else:
             firstname = name.get_first_name().strip()
-
             surns = []
             surprefs = []
 
@@ -270,7 +269,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
 
         # Get missing coordinates from place tree
 
-        max_place_level_difference = 2
+        max_place_level_difference = 2  # max diff to inherit coordinates to enclosed place
 
         place_level = self._tng_place_level(place)[0]
         zoom_level = self._tng_place_level(place)[1]
@@ -383,7 +382,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         self._note_references(place.get_note_list(), level+1)
 
     def generate_place_dictionary(self, place):
-        #db = self.dbstate.get_database() -- works only in addresspreview
+        #db = self.dbstate.get_database() -- for addresspreview
         db = self.dbase
         location = get_main_location(db, place)
         place_dict = dict()
@@ -412,8 +411,6 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         for key, value in keys.items():
             if key not in keys_to_remove:
                 for check_key, check_value in keys.items():
-                    if value == check_value and key != check_key:
-                        print(key + " is same as " + check_key)
                     if key != check_key:
                         if value and check_value:
                             test = " " + value + " "
@@ -434,7 +431,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
 
     def _is_extra_info_in_place_names(self, place_title, place_dictionary):
         """
-
+        Returns true if there is anything in place tree that does not exist in place title
         """
         ret = False
         if place_title:
@@ -448,7 +445,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
 
     def get_place_list(self, place, date=None):
         """
-        Returns a list of all places in place tree
+        Returns a list of all places in a place tree
         """
 
         db = self.dbase
@@ -540,7 +537,7 @@ class GedcomWriterOptionBox(WriterOptionBox):
         self.include_tng_place_levels_check = \
             Gtk.CheckButton(_("Include TNG specific place level tags 'PLEV' and 'ZOOM'"))
         self.move_patronymics_check = \
-            Gtk.CheckButton(_("Move matro-/patronynic surnames to forename"))
+            Gtk.CheckButton(_("Move matro-/patronymic surnames to forename"))
 
         # Set defaults:
         self.get_coordinates_check.set_active(1)
