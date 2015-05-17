@@ -63,7 +63,7 @@ from gramps.gen.utils.location import get_main_location
 from gramps.gen.display.place import displayer as place_displayer
 from gramps.gen.lib.date import Today
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 try:
     _trans = glocale.get_addon_translator(__file__)
@@ -190,8 +190,14 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             surprefix = ', '.join(surprefs)
             suffix = name.get_suffix()
             title = name.get_title()
-            nick = name.get_nick_name()
-            if nick.strip() == '':
+            nick = name.get_nick_name().strip()
+            call = name.get_call_name().strip()
+            if call.strip() != '':
+                if nick != '' and nick.lower() != call.lower():
+                    nick = call + ', ' + nick
+                else:
+                    nick = call
+            if nick == '':
                 nick = attr_nick
 
             #gedcom name
