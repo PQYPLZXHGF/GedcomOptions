@@ -239,10 +239,10 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         """
         if event_ref:
             event = self.dbase.get_event_from_handle(event_ref.ref)
-            if event_has_subordinate_data(event, event_ref):
-                self._writeln(1, key)
-            else:
-                self._writeln(1, key, 'Y')
+            ## if event_has_subordinate_data(event, event_ref):
+            self._writeln(1, key)
+            ## else:
+            ##    self._writeln(1, key, 'Y')
             if event.get_description().strip() != "":
                 self._writeln(2, 'TYPE', event.get_description())
             self._dump_event_stats(event, event_ref)
