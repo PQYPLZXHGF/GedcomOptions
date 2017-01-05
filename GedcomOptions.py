@@ -62,8 +62,10 @@ from gramps.gen.utils.place import conv_lat_lon
 from gramps.gen.utils.location import get_main_location
 from gramps.gen.display.place import displayer as place_displayer
 from gramps.gen.lib.date import Today
+import gramps.plugins.lib.libgedcom as libgedcom
+import math
 
-__version__ = "0.4.4"
+__version__ = "0.5.1"
 
 try:
     _trans = glocale.get_addon_translator(__file__)
@@ -77,9 +79,9 @@ _ = _trans.gettext
 #
 #------------------------------------------------------------
 
-class GedcomWriterExtension(exportgedcom.GedcomWriter):
+class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
     """
-    GedcomWriter extension
+    GedcomWriter with Extra Options
     """
     _address_format = ["%street, %custom, %unknown, %building, %department, %farm, %neighborhood",
                        "%hamlet, %village, %borough, %locality",
@@ -131,29 +133,34 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
     _country_level_place_types = [PlaceType.COUNTRY]
     _unknown_level_place_types = [PlaceType.UNKNOWN, PlaceType.CUSTOM]  # will be interpreted with highest accuracy
 
+    _days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
     #parser = FormatStringParser()
 
     def __init__(self, database, user, option_box=None):
-        super(GedcomWriterExtension, self).__init__(database, user, option_box)
+        super(GedcomWriterWithOptions, self).__init__(database, user, option_box)
         if option_box:
+            self.reversed_places = option_box.reversed_places
             self.get_coordinates = option_box.get_coordinates
             self.export_only_useful_pe_addresses = option_box.export_only_useful_pe_addresses
             self.extended_pe_addresses = option_box.extended_pe_addresses
-            self.avoid_repetition_in_pe_addresses = option_box.avoid_repetition_in_pe_addresses
+            self.avoid_repetition_in_places = option_box.avoid_repetition_in_places
             self.include_tng_place_levels = option_box.include_tng_place_levels
             self.omit_borough_from_address = option_box.omit_borough_from_address
             self.move_patronymics = option_box.move_patronymics
         else:
-            self.get_coordinates = 1
-            self.export_only_useful_pe_addresses = 1
-            self.extended_pe_addresses = 1
-            self.avoid_repetition_in_pe_addresses = 1
-            self.include_tng_place_levels = 1
-            self.omit_borough_from_address = 1
-            self.move_patronymics = 1
+            self.reversed_places = 0
+            self.get_coordinates = 0
+            self.export_only_useful_pe_addresses = 0
+            self.extended_pe_addresses = 0
+            self.avoid_repetition_in_places = 0
+            self.include_tng_place_levels = 0
+            self.omit_borough_from_address = 0
+            self.move_patronymics = 0
 
         self.parser = FormatStringParser(self._place_keys)
         print("Gedcom Options " + __version__ + " loaded")
+
 
     def _person_name(self, name, attr_nick):
         """
@@ -169,7 +176,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         """
 
         if not self.move_patronymics:
-            super(GedcomWriterExtension, self)._person_name(name, attr_nick)
+            super(GedcomWriterWithOptions, self)._person_name(name, attr_nick)
         else:
             firstname = name.get_first_name().strip()
             surns = []
@@ -233,6 +240,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             self._source_references(name.get_citation_list(), 2)
         self._note_references(name.get_note_list(), 2)
 
+
     def _person_event_ref(self, key, event_ref):
         """
         Write out the BIRTH and DEATH events for the person.
@@ -247,7 +255,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                 self._writeln(2, 'TYPE', event.get_description())
             self._dump_event_stats(event, event_ref)
 
-    def _place(self, place, level):
+    def _place(self, place, dateobj, level):
         """
         PLACE_STRUCTURE:=
             n PLAC <PLACE_NAME> {1:1}
@@ -281,7 +289,12 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         if place is None:
             return
 
-        place_name = place_displayer.display(self.dbase, place)
+        place_name = place_displayer.display(self.dbase, place, dateobj) #changed since 4.1
+        if self.avoid_repetition_in_places:
+            place_name = self.remove_repetitive_places_from_string(place_name)
+        if self.reversed_places:
+            place_name = self.reverse_order_places(place_name)
+
         self._writeln(level, "PLAC", place_name.replace('\r', ' '), limit=120)
         longitude = place.get_longitude()
         latitude = place.get_latitude()
@@ -289,11 +302,12 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
 
         # Get missing coordinates from place tree
 
-        max_place_level_difference = 2  # max diff to inherit coordinates to enclosed place
+        max_place_level_difference = 4  # max diff to inherit coordinates to enclosed place
 
         place_level = self._tng_place_level(place)[0]
         zoom_level = self._tng_place_level(place)[1]
 
+        ### Inherit coordinates
         if self.get_coordinates:
 
             test_tng_place_level = place_level
@@ -302,12 +316,11 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             place_level_diff = 999
 
             if self.get_coordinates and not longitude and not latitude:
-                place_list = self.get_place_list(place)
+                place_list = self.get_place_list(place, dateobj)
                 if len(place_list) > 1:
                     for place_above in place_list:
                         if place is not place_above:
-                            title_above = place_displayer.display(self.dbase, place_above).replace('\r', ' ')
-
+                            title_above = place_displayer.display(self.dbase, place_above, dateobj).replace('\r', ' ')
                             test_longitude = place_above.get_longitude()
                             test_latitude = place_above.get_latitude()
                             if test_latitude and test_longitude:
@@ -330,7 +343,6 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                         place_level = self._tng_place_level(inherited_place)[0]
                         zoom_level = self._tng_place_level(inherited_place)[1]
 
-
         if longitude and latitude:
             (latitude, longitude) = conv_lat_lon(latitude, longitude, "GEDCOM")
         if longitude and latitude:
@@ -344,13 +356,11 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
         # The Gedcom standard shows that an optional address structure can
         # be written out in the event detail.
         # http://homepages.rootsweb.com/~pmcbride/gedcom/55gcch2.htm#EVENT_DETAIL
-
-
         title = place_name.replace('\r', ' ')
         location = get_main_location(self.dbase, place)
         postal_code = place.get_code()
 
-        placetree = self.generate_place_dictionary(place)
+        placetree = self.generate_place_dictionary(place, dateobj)
 
         # Check if there is any piece of information in places that is not in place's title, and if is,
         # will add address data in gedcom
@@ -365,7 +375,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             if self.extended_pe_addresses:
                 #parser = FormatStringParser(self._place_keys)
 
-                if self.avoid_repetition_in_pe_addresses:
+                if self.avoid_repetition_in_places:
                     self._remove_repetitive_places(placetree, self._address_format)
 
                 address1 = self.parser.parse(placetree, self._address_format[0])
@@ -401,10 +411,11 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
 
         self._note_references(place.get_note_list(), level+1)
 
-    def generate_place_dictionary(self, place):
+
+    def generate_place_dictionary(self, place, dateobj):
         #db = self.dbstate.get_database() -- for addresspreview
         db = self.dbase
-        location = get_main_location(db, place)
+        location = get_main_location(db, place, dateobj)
         place_dict = dict()
 
         for key in self._place_keys:
@@ -420,6 +431,41 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
 
             place_dict[key] = value
         return place_dict
+
+
+    def remove_repetitive_places_from_string(self, place_title):
+        place_components = place_title.split(",")
+        result_list = []
+        result = ""
+        items_to_remove = []
+        for i in range(0, len(place_components)):
+            candidate = place_components[i].strip()
+            for j in range(0, len(place_components)):
+                if j == i or candidate in items_to_remove:
+                    continue
+                test = " " + candidate + " "
+                check_test = " " + place_components[j].strip() + " "
+                if test.find(check_test) >= 0:
+                    items_to_remove.append(place_components[j].strip())
+        for component in place_components:
+            if component.strip() not in items_to_remove:
+                result_list.append(component.strip())
+        for i in range(0, len(result_list)):
+            result += result_list[i]
+            if i != len(result_list) - 1:
+                result += ", "
+        return result
+
+
+    def reverse_order_places(self, place_title):
+        place_components = place_title.split(",")
+        result = ""
+        for i in reversed(range(0, len(place_components))):
+            result += place_components[i].strip()
+            if i != 0:
+                result += ", "
+        return result
+
 
     def _remove_repetitive_places(self, place_dictionary, address_format):
         keys = dict()
@@ -449,6 +495,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                 place_dictionary[key] = ""
             return omit_string  # returning anything is for debugging purpose only
 
+
     def _is_extra_info_in_place_names(self, place_title, place_dictionary):
         """
         Returns true if there is anything in place tree that does not exist in place title
@@ -462,6 +509,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
                         break
 
         return ret
+
 
     def get_place_list(self, place, date=None):
         """
@@ -489,6 +537,7 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             lines.append(place)
         return lines
 
+
     def _tng_place_level(self, place):
         level = 6
         zoom = 9
@@ -508,12 +557,114 @@ class GedcomWriterExtension(exportgedcom.GedcomWriter):
             level, zoom = 6, 4
         return level, zoom
 
+    #---------------
+    # Sort Children
+    # --------------
+
+    def _family_child_list(self, child_ref_list):
+        """
+        Override of standard ExportGeccom plugin version
+        Write the child XREF values to the GEDCOM file.
+        """
+        if len(child_ref_list) == 0:
+            return
+
+        child_list = [
+            self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
+            for cref in child_ref_list]
+
+        # Sort children
+
+        child_sort_list = []
+        sv_list = []
+        for cref in child_ref_list:  # get birth dates
+            gid = self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
+            birth_ref = self.dbase.get_person_from_handle(cref.ref).get_birth_ref()
+            if birth_ref is not None:
+                event = self.dbase.get_event_from_handle(birth_ref.ref)
+                dateobj = event.get_date_object()
+                val = self.parse_dateobject(dateobj)
+            else:
+                val = None  # birth date not set
+
+            child_sort_list.append((gid, val))  # a tuple list of (gramps id, sortvalue)
+            sv_list.append(val)
+
+        trend = FuzzySort.order_trend(sv_list)
+        if trend < 1 and len(child_ref_list) > 1:
+            child_sort_list = FuzzySort.fuzzysorted(child_sort_list, True)
+
+        # Write to gedcom
+        for (gid, sort_value) in child_sort_list:
+            if gid is None: continue
+            self._writeln(1, 'CHIL', '@%s@' % gid)
+
+    def decorate_by_birth(self, child_ref_list):
+        child_sort_list = []
+        for cref in child_ref_list:
+            gid = self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
+            birth_ref = self.dbase.get_person_from_handle(cref.ref).get_birth_ref()
+            if birth_ref is not None:
+                event = self.dbase.get_event_from_handle(birth_ref.ref)
+                dateobj = event.get_date_object()
+                val = self.parse_dateobject(dateobj)
+            else:
+                val = None
+            child_sort_list.append((gid, val))
+        return child_sort_list
+
+    def parse_dateobject(self, date):
+        """
+
+        """
+        start = date.get_start_date()
+        if start != Date.EMPTY:
+            mod = date.get_modifier()
+            if mod == Date.MOD_SPAN or mod == Date.MOD_RANGE:
+                stop = date.get_stop_date()
+                val = (self.get_numeric_date(start) + self.get_numeric_date(stop)) / 2
+            else:
+                val = self.get_numeric_date(start)
+                if mod == Date.MOD_AFTER:
+                    val += 0.999
+                if mod == Date.MOD_BEFORE:
+                    val -= 0.999
+        else:
+            val = None
+        return val
+
+    def get_numeric_date(self, date):
+        day = date[0]
+        mon = date[1]
+        year = date[2]
+        if day is 0:
+            day = 15
+        if mon is 0:
+            val = year + 0.5
+        else:
+            days_passed = 0
+            for i in range(1, mon - 1):
+                days_passed += self._days_in_month[i]
+            if mon is not 0:
+                days_passed += day
+            else:
+                days_passed += self._days_in_month[mon] / 2
+            val = year + days_passed / 365
+        return val
+
+    def has_individuals_without_birthdate(self, a_list):
+        for cref in a_list:
+            birth_ref = self.dbase.get_person_from_handle(cref.ref).get_birth_ref()
+            if birth_ref is None:
+                    return True
+        return False
 
 #-------------------------------------------------------------------------
 #
 # GedcomWriter Options
 #
 #-------------------------------------------------------------------------
+
 class GedcomWriterOptionBox(WriterOptionBox):
     """
     Create a VBox with the option widgets and define methods to retrieve
@@ -525,14 +676,16 @@ class GedcomWriterOptionBox(WriterOptionBox):
         Initialize the local options.
         """
         super(GedcomWriterOptionBox, self).__init__(person, dbstate, uistate)
+        self.reversed_places = 1
+        self.reversed_places_check = None
         self.get_coordinates = 1
         self.get_coordinates_check = None
         self.export_only_useful_pe_addresses = 1
         self.export_only_useful_pe_addresses_check = None
         self.extended_pe_addresses = 1
         self.extended_pe_addresses_check = None
-        self.avoid_repetition_in_pe_addresses = 1
-        self.avoid_repetition_in_pe_addresses_check = None
+        self.avoid_repetition_in_places = 1
+        self.avoid_repetition_in_places_check = None
         self.include_tng_place_levels = 1
         self.include_tng_place_levels_check = None
         self.omit_borough_from_address = 1
@@ -544,12 +697,14 @@ class GedcomWriterOptionBox(WriterOptionBox):
         option_box = super(GedcomWriterOptionBox, self).get_option_box()
 
         # Make options:
+        self.reversed_places_check = \
+            Gtk.CheckButton(_("Reverse order place components"))
         self.export_only_useful_pe_addresses_check = \
             Gtk.CheckButton(_("Omit addresses that have no extra info in addition to place title"))
         self.extended_pe_addresses_check = \
-            Gtk.CheckButton(_("Include more place types in place event addresses"))
-        self.avoid_repetition_in_pe_addresses_check = \
-            Gtk.CheckButton(_("Try to avoid repetition in address fields (experimental)"))
+            Gtk.CheckButton(_("Include additional place data in addresses"))
+        self.avoid_repetition_in_places_check = \
+            Gtk.CheckButton(_("Try to avoid repetition in place names"))
         self.omit_borough_from_address_check = \
             Gtk.CheckButton(_("Omit neighborhood from addresses that have street and city (experimental)"))
         self.get_coordinates_check = \
@@ -560,20 +715,22 @@ class GedcomWriterOptionBox(WriterOptionBox):
             Gtk.CheckButton(_("Move matro-/patronymic surnames to forename"))
 
         # Set defaults:
+        self.reversed_places_check.set_active(1)
         self.get_coordinates_check.set_active(1)
         self.export_only_useful_pe_addresses_check.set_active(1)
         self.extended_pe_addresses_check.set_active(1)
-        self.avoid_repetition_in_pe_addresses_check.set_active(1)
+        self.avoid_repetition_in_places_check.set_active(1)
         self.include_tng_place_levels_check.set_active(1)
         self.omit_borough_from_address_check.set_active(1)
         self.move_patronymics_check.set_active(1)
 
         # Add to gui:
         option_box.pack_start(self.move_patronymics_check, False, False, 0)
+        option_box.pack_start(self.reversed_places_check, False, False, 0)
         option_box.pack_start(self.export_only_useful_pe_addresses_check, False, False, 0)
         option_box.pack_start(self.extended_pe_addresses_check, False, False, 0)
         option_box.pack_start(self.omit_borough_from_address_check, False, False, 0)
-        option_box.pack_start(self.avoid_repetition_in_pe_addresses_check, False, False, 0)
+        option_box.pack_start(self.avoid_repetition_in_places_check, False, False, 0)
         option_box.pack_start(self.get_coordinates_check, False, False, 0)
         option_box.pack_start(self.include_tng_place_levels_check, False, False, 0)
 
@@ -585,14 +742,16 @@ class GedcomWriterOptionBox(WriterOptionBox):
         Get the options and store locally.
         """
         super(GedcomWriterOptionBox, self).parse_options()
+        if self.reversed_places_check:
+            self.reversed_places = self.reversed_places_check.get_active()
         if self.get_coordinates_check:
             self.get_coordinates = self.get_coordinates_check.get_active()
         if self.export_only_useful_pe_addresses_check:
             self.export_only_useful_pe_addresses = self.export_only_useful_pe_addresses_check.get_active()
         if self.extended_pe_addresses_check:
             self.extended_pe_addresses = self.extended_pe_addresses_check.get_active()
-        if self.avoid_repetition_in_pe_addresses_check:
-            self.avoid_repetition_in_pe_addresses = self.avoid_repetition_in_pe_addresses_check.get_active()
+        if self.avoid_repetition_in_places_check:
+            self.avoid_repetition_in_places = self.avoid_repetition_in_places_check.get_active()
         if self.include_tng_place_levels_check:
             self.include_tng_place_levels = self.include_tng_place_levels_check.get_active()
         if self.omit_borough_from_address_check:
@@ -607,7 +766,7 @@ def export_data(database, filename, user, option_box=None):
     """
     ret = False
     try:
-        ged_write = GedcomWriterExtension(database, user, option_box)
+        ged_write = GedcomWriterWithOptions(database, user, option_box)
         ret = ged_write.write_gedcom_file(filename)
     except IOError as msg:
         msg2 = _("Could not create %s") % filename
@@ -619,12 +778,291 @@ def export_data(database, filename, user, option_box=None):
 
 # ===================================================================================================================
 #
+# FUZZYSORT
+#
+#
+#
+# (C) 2015-2017  Kati Haapamaki
+#
+# ===================================================================================================================
+
+
+class FuzzySort():
+
+    @staticmethod
+    def fuzzysorted(decorated_list, unsortables_last=True):
+        sv_list = [x[1] for x in decorated_list]
+        trend = FuzzySort.order_trend(sv_list)
+
+        if trend == 1 and FuzzySort.has_dateless(sv_list) == False:
+            return decorated_list # no need for sorting
+
+        if FuzzySort.has_dateless(sv_list) and abs(trend) < 0.20:
+            return decorated_list # cannot sort
+
+        if FuzzySort.has_dateless(sv_list):
+            pass
+
+        return sorted(FuzzySort.estimate_missing_sort_values(decorated_list, unsortables_last), key=lambda x: x[1])
+
+    @staticmethod
+    def estimate_missing_sort_values(a_list, unsortables_last=True, count_zeros=True):
+        new_list = list(a_list)
+        unsortables_base_value = 3000 if unsortables_last else 0
+
+        sv_list = [x[1] for x in a_list]  #FuzzySort.unpack(a_list, 1)
+        i = 0
+        for value, sort_value in a_list:
+            if not sort_value or not count_zeros and sort_value == 0:
+                sort_value = FuzzySort.estimate_sortvalue(sv_list[:i], sv_list[i+1:], count_zeros)
+                if sort_value:
+                    new_list[i] = (value, sort_value)
+                else:
+                    if new_list[i][1] is None:
+                        new_list[i] = (value, unsortables_base_value + i) #sort last or first but keep original order
+            i += 1
+        return new_list
+
+
+    @staticmethod
+    def decorate_with_index(a_list):
+        i = 0
+        new_list = []
+        for value in a_list:
+            new_list.append((value, i))
+            i += 1
+        return new_list
+
+
+    @staticmethod
+    def decorate_with_sorted_index(a_list):
+        i = 0
+        new_list = []
+        for value, index in a_list:
+            new_list.append((value, index, i))
+            i += 1
+        return new_list
+
+
+    @staticmethod
+    def generate_sort_index_list(a_list):
+        """
+        Generates a tuple list from numeric list to decorate item with their original index and index that they
+        would have after sorting
+        tuple = (value, original index, sorted index)
+
+        :param a_list:
+        :return:
+        """
+        indexed_list = FuzzySort.decorate_with_index(a_list)  # store original index to be able to revert
+        # sort and store sorted index
+        temp_list = FuzzySort.decorate_with_sorted_index(sorted(indexed_list))
+        # revert to original order
+        return sorted(temp_list, key=lambda x: x[1])
+
+        #return (FuzzySort.remove_first_decoration(temp_list))
+
+
+    @staticmethod
+    def get_valid_list(a_list, count_zeros=True):
+        l = []
+        for item in a_list:
+            if type(item) is tuple:
+                value = item[0]
+                if value is not None and (value != 0 or count_zeros) and item[1] >= 0:
+                    l.append(value)
+            else:
+                value = item
+                if value is not None and (value != 0 or count_zeros):
+                    l.append(value)
+        return l
+
+
+    @staticmethod
+    def estimate_sortvalue(list1, list2, count_zeros=True):
+        """
+        Estimates sort value for items that are not sortable
+
+        :param list1: a partial list that comes before the index value
+        :param list2: a partial list that comes after the index value
+        :param count_zeros: consider zeros as legal values, not non-sortables
+        :return: sort value or None if unable to estimate
+        """
+        valid1 = list(FuzzySort.get_valid_list(list1, count_zeros))
+        valid2 = list(FuzzySort.get_valid_list(list2, count_zeros))
+        full_valid = valid1 + valid2
+
+        # reliability = FuzzySort.order_trend(full_valid, count_zeros)
+        # if reliability < 0.13:
+        #    return None
+
+        pre_sorted = FuzzySort.generate_sort_index_list(full_valid)
+        ps1 = pre_sorted[:len(valid1)]
+        ps2 = pre_sorted[len(valid1):]
+        trend = FuzzySort.order_trend(full_valid, count_zeros)
+
+        if trend >= 0:
+            list_lo = list(ps1)
+            list_hi = list(ps2)
+        else:
+            list_lo = list(ps2)
+            list_hi = list(ps1)
+
+        # remove irrelevant values from lists. values that should probably belong to the other list are considered
+        # irrelevant
+        while FuzzySort.drop_most_irrelevant_value(list_lo, list_hi, count_zeros):
+            pass
+
+        max_lo = FuzzySort.get_max(list_lo, count_zeros)
+        min_hi = FuzzySort.get_min(list_hi, count_zeros)
+        if max_lo is None:
+            if min_hi is None:
+                return None
+            else:
+                return min_hi[0]
+        elif min_hi is None:
+            return max_lo[0]
+
+        return (min_hi[0] + max_lo[0]) / 2.0
+
+
+    @staticmethod
+    def drop_most_irrelevant_value(list_lo, list_hi, count_zeros=True):
+        """
+        Checks if two lists have values that would rather belong to the other list,
+
+        :param list_lo:
+        :param list_hi:
+        :param count_zeros:
+        :return:
+        """
+        if not list_hi or not list_lo:
+            return False
+
+        max_lo = FuzzySort.get_max(list_lo, count_zeros)
+        min_hi = FuzzySort.get_min(list_hi, count_zeros)
+
+        if min_hi[0] < max_lo[0]:  # are lists not in perfect order
+            # when not, find which have value is most useful to drop out
+            d_lo = abs(max_lo[1] - max_lo[2])
+            d_hi = abs(min_hi[1] - min_hi[2])
+
+            if max_lo > min_hi:
+                if d_lo > d_hi:
+                    FuzzySort.remove(list_lo, max_lo)
+                    return True
+                elif d_lo < d_hi:
+                    FuzzySort.remove(list_hi, min_hi)
+                    return True
+                else:
+                    # cannot drop both
+                    return False
+
+        # list is in order or no point of removing anything
+        return False
+
+
+    @staticmethod
+    def remove(a_list, value):
+        if value not in a_list:
+            return
+        a_list.remove(value)
+        FuzzySort.remove(a_list, value)
+        return
+
+    @staticmethod
+    def get_min(a_list, count_zeros=True):
+        found_first = False
+        lowest = 0
+        lowest_item = None
+
+        for item in a_list:
+            if type(item) is tuple:
+                value = item[0]
+                if item[1] < 0:
+                    value = None
+            else:
+                value = item
+            if count_zeros or value != 0 and value is not None:
+                if value < lowest or not found_first:
+                    lowest = value
+                    lowest_item = item
+                    found_first = True
+        return lowest_item
+
+    @staticmethod
+    def get_max(a_list, count_zeros=True):
+        found_first = False
+        highest = 0
+        highest_item = None
+
+        for item in a_list:
+            if type(item) is tuple:
+                value = item[0]
+                if item[1] < 0:
+                    value = None
+            else:
+                value = item
+            if count_zeros or value != 0:
+                if value > highest or not found_first:
+                    highest = value
+                    highest_item = item
+                    found_first = True
+        return highest_item
+
+    @staticmethod
+    def order_trend(svlist, count_zeros=True):
+        plus = 0
+        minus = 0
+        equals = 0
+
+        if len(svlist) < 2:
+            return 1
+
+        last_value = svlist[0]
+
+        for i in range(1, len(svlist)):
+            if not count_zeros and svlist[i] == 0 or svlist[i] is None or last_value is None:
+                continue
+            else:
+                direction = math.copysign(1, svlist[i] - last_value) if svlist[i] != last_value else 0
+                if direction > 0:
+                    plus += 1
+                elif direction < 0:
+                    minus += 1
+                else:
+                    equals += 1
+            last_value = svlist[i]
+
+        if plus == minus:
+            return 0
+
+        return (1 - minus / (plus + equals)) if plus > minus else (1 - plus / (minus + equals))
+
+    @staticmethod
+    def has_dateless(sv_list):
+        for sv in sv_list:
+            if sv is None:
+                return True
+        return False
+
+    @staticmethod
+    def unpack(a_list, i):
+        new_list = []
+        for item in a_list:
+            new_list.append(item[i])
+        return new_list
+
+
+# ===================================================================================================================
+#
 # FORMAT STRING PARSER 0.9.4
 #
 # Parses format string with key coded values in dictionary removing unnecessary separators between parsed names
 #
 # (C) 2015  Kati Haapamaki
 #
+# ===================================================================================================================
 
 
 # ------------------------------------------------------------
@@ -792,6 +1230,7 @@ class FormatStringElement():
         if self.key:
             s += " [" + self.key + "]"
         print(s)
+
 
 # ------------------------------------------------------------
 #

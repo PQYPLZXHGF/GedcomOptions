@@ -23,17 +23,17 @@
 
 # ------------------------------------------------------------------------
 #
-# Modified the GEDCOM Export for TNG -alpha
+# Modified the GEDCOM Export with additional options
 #
 # ------------------------------------------------------------------------
 
 register(EXPORT,
     id    = 'GEDCOM Options',
     name  = _("GEDCOM Options"),
-    name_accell  = _("GEDCOM Options 0.4.3 beta"),
+    name_accell  = _("GEDCOM Options 0.5.1 beta"),
     description =  _("Expansion to default GedCom export module."),
-    version = '0.4.4',
-    gramps_target_version = '4.1',
+    version = '0.5.1',
+    gramps_target_version = '4.2',
     status = STABLE,
     fname = 'GedcomOptions.py',
     export_function = 'export_data',
