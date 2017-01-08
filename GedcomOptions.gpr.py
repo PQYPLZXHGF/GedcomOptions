@@ -1,8 +1,8 @@
 #
 # Gramps - a GTK+/GNOME based genealogy program
 #
-# Copyright (C) 2012 Doug Blank <doug.blank@gmail.com>
-# Copyright (C) 2015 Kati Haapamaki <kati.haapamaki@gmail.com>
+# Copyright (C) 2012      Doug Blank <doug.blank@gmail.com>
+# Copyright (C) 2015-2017 Kati Haapamaki <kati.haapamaki@gmail.com>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -28,11 +28,11 @@
 # ------------------------------------------------------------------------
 
 register(EXPORT,
-    id    = 'GEDCOM Options',
-    name  = _("GEDCOM Options"),
-    name_accell  = _("GEDCOM Options 0.5.1 beta"),
+    id    = 'gedcomoptions',
+    name  = _("GEDCOM With Extra Options"),
+    name_accell  = _("GEDCOM With Extra Options"),
     description =  _("Expansion to default GedCom export module."),
-    version = '0.5.1',
+    version = '0.5.6',
     gramps_target_version = '4.2',
     status = STABLE,
     fname = 'GedcomOptions.py',

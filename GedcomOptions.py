@@ -4,7 +4,7 @@
 #
 # Copyright (C) 2012       Doug Blank <doug.blank@gmail.com>
 # Copyright (C) 2012       Bastien Jacquet
-# Copyright (C) 2015       Kati Haapamaki <kati.haapamaki@gmail.com>
+# Copyright (C) 2015-2017  Kati Haapamaki <kati.haapamaki@gmail.com>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -65,7 +65,7 @@ from gramps.gen.lib.date import Today
 import gramps.plugins.lib.libgedcom as libgedcom
 import math
 
-__version__ = "0.5.1"
+__version__ = "0.5.6"
 
 try:
     _trans = glocale.get_addon_translator(__file__)
@@ -73,9 +73,10 @@ except ValueError:
     _trans = glocale.translation
 _ = _trans.gettext
 
+
 #------------------------------------------------------------
 #
-# MyClass
+# GedcomWriterWithOptions
 #
 #------------------------------------------------------------
 
@@ -140,6 +141,8 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
     def __init__(self, database, user, option_box=None):
         super(GedcomWriterWithOptions, self).__init__(database, user, option_box)
         if option_box:
+            self.sort_children = option_box.sort_children
+            self.sort_events = option_box.sort_events
             self.reversed_places = option_box.reversed_places
             self.get_coordinates = option_box.get_coordinates
             self.export_only_useful_pe_addresses = option_box.export_only_useful_pe_addresses
@@ -149,6 +152,8 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             self.omit_borough_from_address = option_box.omit_borough_from_address
             self.move_patronymics = option_box.move_patronymics
         else:
+            self.sort_children = 0
+            self.sort_events = 0
             self.reversed_places = 0
             self.get_coordinates = 0
             self.export_only_useful_pe_addresses = 0
@@ -160,7 +165,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
         self.parser = FormatStringParser(self._place_keys)
         print("Gedcom Options " + __version__ + " loaded")
-
 
     def _person_name(self, name, attr_nick):
         """
@@ -239,7 +243,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
             self._source_references(name.get_citation_list(), 2)
         self._note_references(name.get_note_list(), 2)
-
 
     def _person_event_ref(self, key, event_ref):
         """
@@ -411,7 +414,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
         self._note_references(place.get_note_list(), level+1)
 
-
     def generate_place_dictionary(self, place, dateobj):
         #db = self.dbstate.get_database() -- for addresspreview
         db = self.dbase
@@ -431,7 +433,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
             place_dict[key] = value
         return place_dict
-
 
     def remove_repetitive_places_from_string(self, place_title):
         place_components = place_title.split(",")
@@ -456,7 +457,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
                 result += ", "
         return result
 
-
     def reverse_order_places(self, place_title):
         place_components = place_title.split(",")
         result = ""
@@ -465,7 +465,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             if i != 0:
                 result += ", "
         return result
-
 
     def _remove_repetitive_places(self, place_dictionary, address_format):
         keys = dict()
@@ -495,7 +494,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
                 place_dictionary[key] = ""
             return omit_string  # returning anything is for debugging purpose only
 
-
     def _is_extra_info_in_place_names(self, place_title, place_dictionary):
         """
         Returns true if there is anything in place tree that does not exist in place title
@@ -509,7 +507,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
                         break
 
         return ret
-
 
     def get_place_list(self, place, date=None):
         """
@@ -536,7 +533,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             visited.append(handle)
             lines.append(place)
         return lines
-
 
     def _tng_place_level(self, place):
         level = 6
@@ -569,30 +565,22 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
         if len(child_ref_list) == 0:
             return
 
-        child_list = [
-            self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
-            for cref in child_ref_list]
+        #child_list = [
+        #    self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
+        #    for cref in child_ref_list]
 
         # Sort children
 
-        child_sort_list = []
-        sv_list = []
-        for cref in child_ref_list:  # get birth dates
-            gid = self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
-            birth_ref = self.dbase.get_person_from_handle(cref.ref).get_birth_ref()
-            if birth_ref is not None:
-                event = self.dbase.get_event_from_handle(birth_ref.ref)
-                dateobj = event.get_date_object()
-                val = self.parse_dateobject(dateobj)
-            else:
-                val = None  # birth date not set
+        child_sort_list = self.decorate_by_birth(child_ref_list)
 
-            child_sort_list.append((gid, val))  # a tuple list of (gramps id, sortvalue)
-            sv_list.append(val)
-
-        trend = FuzzySort.order_trend(sv_list)
-        if trend < 1 and len(child_ref_list) > 1:
-            child_sort_list = FuzzySort.fuzzysorted(child_sort_list, True)
+        if self.sort_children:
+            sorter = FuzzySort()
+            sorter.count_zeros = True
+            sorter.quality_treshold = 0.0
+            sorter.very_high_number = 2500
+            sorter.very_low_number = 1000
+            sorter.descending_order_accepted = False
+            child_sort_list = sorter.fuzzysorted(child_sort_list)
 
         # Write to gedcom
         for (gid, sort_value) in child_sort_list:
@@ -612,6 +600,116 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
                 val = None
             child_sort_list.append((gid, val))
         return child_sort_list
+
+    #---------------
+    # Sort Events
+    # --------------
+
+    def _remaining_events(self, person):
+        """
+        Output all events associated with the person that are not BIRTH or
+        DEATH events.
+
+        Because all we have are event references, we have to
+        extract the real event to discover the event type.
+
+        """
+        global adop_written
+        # adop_written is only shared between this function and
+        # _process_person_event. This is rather ugly code, but it is difficult
+        # to support an Adoption event without an Adopted relationship from the
+        # parent(s), an Adopted relationship from the parent(s) without an
+        # event, and both an event and a relationship. All these need to be
+        # supported without duplicating the output of the ADOP GEDCOM tag. See
+        # bug report 2370.
+        adop_written = False
+
+        event_ref_list = person.get_event_ref_list()
+        event_sort_list = self.decorate_by_date(event_ref_list)
+
+        if self.sort_events:
+            sorter = FuzzySort()
+            sorter.count_zeros = True
+            sorter.quality_treshold = 0.0
+            sorter.very_high_number = 2500
+            sorter.very_low_number = 1000
+            sorter.descending_order_accepted = False
+            event_sort_list = sorter.fuzzysorted(event_sort_list)
+
+        for (event_ref, sort_value) in event_sort_list:  # person.get_event_ref_list():
+            event = self.dbase.get_event_from_handle(event_ref.ref)
+            if not event: continue
+            self._process_person_event(person, event, event_ref)
+        if not adop_written:
+            self._adoption_records(person, adop_written)
+
+    def _family_events(self, family):
+        """
+        Output the events associated with the family.
+
+        Because all we have are event references, we have to extract the real
+        event to discover the event type.
+
+        """
+        event_ref_list = family.get_event_ref_list()
+        event_sort_list = self.decorate_by_date(event_ref_list)
+
+        if self.sort_events:
+            sorter = FuzzySort()
+            sorter.count_zeros = True
+            sorter.quality_treshold = 0.0
+            sorter.very_high_number = 2500
+            sorter.very_low_number = 1000
+            sorter.descending_order_accepted = False
+            event_sort_list = sorter.fuzzysorted(event_sort_list)
+
+        for (event_ref, sort_value) in event_sort_list:  ## family.get_event_ref_list():
+            event = self.dbase.get_event_from_handle(event_ref.ref)
+            if event is None: continue
+            self._process_family_event(event, event_ref)
+            self._dump_event_stats(event, event_ref)
+
+    def decorate_by_date(self, event_ref_list):
+        event_sort_list = []
+        for event_ref in event_ref_list:
+            if event_ref is not None:
+                event = self.dbase.get_event_from_handle(event_ref.ref)
+                dateobj = event.get_date_object()
+                val = self.parse_dateobject(dateobj)
+            else:
+                val = None
+            event_sort_list.append((event_ref, val))
+        return event_sort_list
+
+    def decorate_by_date_and_event_type(self, event_ref_list):
+        event_sort_list = []
+        for event_ref in event_ref_list:
+            modifier = 0
+            if event_ref is not None:
+                event = self.db.get_event_from_handle(event_ref.ref)
+                dateobj = event.get_date_object()
+                val = self.parse_dateobject(dateobj)
+                modifier = self.get_event_type_sort_modifier(event_ref)
+            else:
+                val = None
+            event_sort_list.append((event_ref, val, modifier))
+        return event_sort_list
+
+    def get_event_type_sort_modifier(self, event_ref):
+        event = self.db.get_event_from_handle(event_ref.ref)
+        event_type = event.get_type()
+        val = 0
+        if event_type == EventType.BIRTH:
+            val = -3000 # must be less than fuzzysorter's very_low_number
+        if event_type == EventType.DEATH:
+            val = 3000 # must be more than fuzzysorter's very_high_number
+        if event_type == EventType.CAUSE_DEATH:
+            val = 3001
+        if event_type == EventType.CREMATION:
+            val = 3002
+        if event_type == EventType.PROBATE:
+            val = 3003
+        return val
 
     def parse_dateobject(self, date):
         """
@@ -659,6 +757,7 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
                     return True
         return False
 
+
 #-------------------------------------------------------------------------
 #
 # GedcomWriter Options
@@ -676,6 +775,10 @@ class GedcomWriterOptionBox(WriterOptionBox):
         Initialize the local options.
         """
         super(GedcomWriterOptionBox, self).__init__(person, dbstate, uistate)
+        self.sort_children = 1
+        self.sort_children_check = None
+        self.sort_events = 1
+        self.sort_events_check = None
         self.reversed_places = 1
         self.reversed_places_check = None
         self.get_coordinates = 1
@@ -697,6 +800,10 @@ class GedcomWriterOptionBox(WriterOptionBox):
         option_box = super(GedcomWriterOptionBox, self).get_option_box()
 
         # Make options:
+        self.sort_children_check = \
+            Gtk.CheckButton(_("Smart sort children"))
+        self.sort_events_check = \
+            Gtk.CheckButton(_("Sort events"))
         self.reversed_places_check = \
             Gtk.CheckButton(_("Reverse order place components"))
         self.export_only_useful_pe_addresses_check = \
@@ -715,6 +822,8 @@ class GedcomWriterOptionBox(WriterOptionBox):
             Gtk.CheckButton(_("Move matro-/patronymic surnames to forename"))
 
         # Set defaults:
+        self.sort_children_check.set_active(1)
+        self.sort_events_check.set_active(0)
         self.reversed_places_check.set_active(1)
         self.get_coordinates_check.set_active(1)
         self.export_only_useful_pe_addresses_check.set_active(1)
@@ -725,6 +834,8 @@ class GedcomWriterOptionBox(WriterOptionBox):
         self.move_patronymics_check.set_active(1)
 
         # Add to gui:
+        option_box.pack_start(self.sort_children_check, False, False, 0)
+        option_box.pack_start(self.sort_events_check, False, False, 0)
         option_box.pack_start(self.move_patronymics_check, False, False, 0)
         option_box.pack_start(self.reversed_places_check, False, False, 0)
         option_box.pack_start(self.export_only_useful_pe_addresses_check, False, False, 0)
@@ -780,141 +891,124 @@ def export_data(database, filename, user, option_box=None):
 #
 # FUZZYSORT
 #
-#
-#
 # (C) 2015-2017  Kati Haapamaki
 #
 # ===================================================================================================================
 
-
 class FuzzySort():
 
-    @staticmethod
-    def fuzzysorted(decorated_list, unsortables_last=True):
+    # Uses internally this type of temporary tuple decorated lists:
+    # decorated_list: (object, sort value)  INPUT LIST!
+    # sv_list: ('nullable' sort value)
+    # valid_sv_list (sort value)
+    # one_index_sv_list (sort value, original index)
+    # indexed_list: (sort value, original index, sorted index)
+    #
+    # trend: -1 to 1 depending if the list is descending or ascending. fractional if there are oddities (needs sorting)
+    # quality 0 to 1 measures how well the list is in order
+
+    # Todo:
+    # Quality tresholds are not used at all atm
+
+    __version__ = "0.2.2"
+
+    quality_treshold = 0.0
+    very_low_number = -99999
+    very_high_number = 99999
+    descending_order_accepted = False
+    count_zeros = True
+    unsortables_last = True
+    debug = False
+
+    def __init__(self):
+        pass
+
+    def fuzzysorted(self, decorated_list):
         sv_list = [x[1] for x in decorated_list]
-        trend = FuzzySort.order_trend(sv_list)
+        trend = self.order_trend(sv_list)
 
-        if trend == 1 and FuzzySort.has_dateless(sv_list) == False:
-            return decorated_list # no need for sorting
+        # this is for debuggin only
+        # quality checks are needed only when estimating missing sort values
+        quality = self.order_quality(sv_list)
 
-        if FuzzySort.has_dateless(sv_list) and abs(trend) < 0.20:
-            return decorated_list # cannot sort
+        # list is in perfect order, don't sort
+        if trend == 1:
+            return decorated_list
 
-        if FuzzySort.has_dateless(sv_list):
-            pass
+        # no dateless items, no guessing needed
+        if not self.has_none_values(sv_list):
+            return sorted(decorated_list, key=lambda x: x[1])
 
-        return sorted(FuzzySort.estimate_missing_sort_values(decorated_list, unsortables_last), key=lambda x: x[1])
+        # guess dateless items and sort
+        if self.debug:
+            print(decorated_list)
+            print("Trend: " + str(trend))
+            print("Quality: " + str(quality))
+        sorted_list = sorted(self.estimate_missing_sort_values(decorated_list), key=lambda x: x[1])
+        if self.debug:
+            print(sorted_list)
+            print("-----------")
+        return sorted_list
 
-    @staticmethod
-    def estimate_missing_sort_values(a_list, unsortables_last=True, count_zeros=True):
-        new_list = list(a_list)
-        unsortables_base_value = 3000 if unsortables_last else 0
+    def estimate_missing_sort_values(self, decorated_list):
+        new_list = list(decorated_list)
+        unsortables_base_value = self.very_high_number if self.unsortables_last else self.very_low_number
 
-        sv_list = [x[1] for x in a_list]  #FuzzySort.unpack(a_list, 1)
+        # extract sort value list from tuple list, could use also self.unpack(decorated_list, 1)
+        sv_list = [x[1] for x in decorated_list]
+        trend = self.order_trend(sv_list)
+
         i = 0
-        for value, sort_value in a_list:
-            if not sort_value or not count_zeros and sort_value == 0:
-                sort_value = FuzzySort.estimate_sortvalue(sv_list[:i], sv_list[i+1:], count_zeros)
+        for value, sort_value in decorated_list:
+            if sort_value == None or (self.count_zeros is False and sort_value == 0):
+                sort_value = self.estimate_sortvalue(sv_list, i, trend)
                 if sort_value:
                     new_list[i] = (value, sort_value)
                 else:
+                    # cannot estimate sort value, use something that throws the item to the begining or the end
                     if new_list[i][1] is None:
                         new_list[i] = (value, unsortables_base_value + i) #sort last or first but keep original order
             i += 1
+
         return new_list
 
-
-    @staticmethod
-    def decorate_with_index(a_list):
-        i = 0
-        new_list = []
-        for value in a_list:
-            new_list.append((value, i))
-            i += 1
-        return new_list
-
-
-    @staticmethod
-    def decorate_with_sorted_index(a_list):
-        i = 0
-        new_list = []
-        for value, index in a_list:
-            new_list.append((value, index, i))
-            i += 1
-        return new_list
-
-
-    @staticmethod
-    def generate_sort_index_list(a_list):
-        """
-        Generates a tuple list from numeric list to decorate item with their original index and index that they
-        would have after sorting
-        tuple = (value, original index, sorted index)
-
-        :param a_list:
-        :return:
-        """
-        indexed_list = FuzzySort.decorate_with_index(a_list)  # store original index to be able to revert
-        # sort and store sorted index
-        temp_list = FuzzySort.decorate_with_sorted_index(sorted(indexed_list))
-        # revert to original order
-        return sorted(temp_list, key=lambda x: x[1])
-
-        #return (FuzzySort.remove_first_decoration(temp_list))
-
-
-    @staticmethod
-    def get_valid_list(a_list, count_zeros=True):
-        l = []
-        for item in a_list:
-            if type(item) is tuple:
-                value = item[0]
-                if value is not None and (value != 0 or count_zeros) and item[1] >= 0:
-                    l.append(value)
-            else:
-                value = item
-                if value is not None and (value != 0 or count_zeros):
-                    l.append(value)
-        return l
-
-
-    @staticmethod
-    def estimate_sortvalue(list1, list2, count_zeros=True):
+    def estimate_sortvalue(self, sv_list, break_index, trend):
         """
         Estimates sort value for items that are not sortable
 
-        :param list1: a partial list that comes before the index value
+        :param sv_list: a partial list that comes before the index value
         :param list2: a partial list that comes after the index value
         :param count_zeros: consider zeros as legal values, not non-sortables
         :return: sort value or None if unable to estimate
         """
-        valid1 = list(FuzzySort.get_valid_list(list1, count_zeros))
-        valid2 = list(FuzzySort.get_valid_list(list2, count_zeros))
+        valid1 = list(self.rip_off_none_values(sv_list[:break_index]))
+        valid2 = list(self.rip_off_none_values(sv_list[break_index + 1:]))
         full_valid = valid1 + valid2
 
-        # reliability = FuzzySort.order_trend(full_valid, count_zeros)
-        # if reliability < 0.13:
-        #    return None
+        # INDEXED LIST FORMED HERE
+        indexed_list = self.generate_indexed_sort_value_list(full_valid)
+        indexed_list_1 = indexed_list[:len(valid1)]
+        indexed_list_2 = indexed_list[len(valid1):]
 
-        pre_sorted = FuzzySort.generate_sort_index_list(full_valid)
-        ps1 = pre_sorted[:len(valid1)]
-        ps2 = pre_sorted[len(valid1):]
-        trend = FuzzySort.order_trend(full_valid, count_zeros)
-
-        if trend >= 0:
-            list_lo = list(ps1)
-            list_hi = list(ps2)
+        if trend >= 0 or self.descending_order_accepted is False:
+            lower_indexed_list = list(indexed_list_1)
+            higher_indexed_list = list(indexed_list_2)
         else:
-            list_lo = list(ps2)
-            list_hi = list(ps1)
+            lower_indexed_list = list(indexed_list_2)
+            higher_indexed_list = list(indexed_list_1)
 
-        # remove irrelevant values from lists. values that should probably belong to the other list are considered
+        # remove irrelevant values from lists. values that should belong to the other list are considered
         # irrelevant
-        while FuzzySort.drop_most_irrelevant_value(list_lo, list_hi, count_zeros):
-            pass
+        if self.debug:
+            print("Estimating at index: " + str(break_index))
+        estimation_quality = self.drop_irrelevant_values(lower_indexed_list, higher_indexed_list)
+        if self.debug:
+            print("Estimation quality: " + str(estimation_quality))
+        if estimation_quality < self.quality_treshold:
+            return None
 
-        max_lo = FuzzySort.get_max(list_lo, count_zeros)
-        min_hi = FuzzySort.get_min(list_hi, count_zeros)
+        max_lo = self.get_max(lower_indexed_list)  # index tuple (sv, original, sorted)
+        min_hi = self.get_min(higher_indexed_list) # index tuple (sv, original, sorted)
         if max_lo is None:
             if min_hi is None:
                 return None
@@ -925,53 +1019,236 @@ class FuzzySort():
 
         return (min_hi[0] + max_lo[0]) / 2.0
 
+    def generate_indexed_sort_value_list(self, sv_list, reverse_sorting=False):
+        """
+        Generates a tuple list from numeric list to decorate item with their original index and index that they
+        would have after sorting
+        tuple = (value, original index, sorted index)
 
-    @staticmethod
-    def drop_most_irrelevant_value(list_lo, list_hi, count_zeros=True):
+        :param sv_list:
+        :param reverse_sorting:
+        :return:
+        """
+        indexed_list = self.decorate_with_original_index(sv_list)  # store original index to be able to revert
+        # sort and store sorted index
+        temp_list = self.decorate_with_sorted_index(sorted(indexed_list, reverse=reverse_sorting))
+        # revert to original order
+        return sorted(temp_list, key=lambda x: x[1])
+
+        #return (self.remove_first_decoration(temp_list))
+
+    def drop_irrelevant_values(self, lower_index_list, higher_index_list, quality=1):
         """
         Checks if two lists have values that would rather belong to the other list,
 
-        :param list_lo:
-        :param list_hi:
+        :param lower_index_list:
+        :param higher_index_list:
         :param count_zeros:
         :return:
         """
-        if not list_hi or not list_lo:
-            return False
+        if not higher_index_list or not lower_index_list:
+            return quality
 
-        max_lo = FuzzySort.get_max(list_lo, count_zeros)
-        min_hi = FuzzySort.get_min(list_hi, count_zeros)
+        max_lo = self.get_max(lower_index_list)  # index tuple (sv, original, sorted)
+        min_hi = self.get_min(higher_index_list)  # index tuple (sv, original, sorted)
+
+        trend_dropping_max_lo, quality_dropping_max_lo = \
+            self.test_trend_quality_by_dropping(lower_index_list, higher_index_list, max_lo)
+        trend_dropping_min_hi, quality_dropping_min_hi = \
+            self.test_trend_quality_by_dropping(lower_index_list, higher_index_list, min_hi)
+
+        if (self.descending_order_accepted):
+            trend_dropping_max_lo = abs(trend_droppping_max_lo)
+            trend_dropping_min_hi = abs(trend_droppping_min_hi)
+
+        break_index = len(lower_index_list)
 
         if min_hi[0] < max_lo[0]:  # are lists not in perfect order
             # when not, find which have value is most useful to drop out
-            d_lo = abs(max_lo[1] - max_lo[2])
-            d_hi = abs(min_hi[1] - min_hi[2])
+            delta_index_lo = abs(max_lo[1] - max_lo[2])
+            delta_index_hi = abs(min_hi[1] - min_hi[2])
+            drop_from_lo_list = None
+            drop_from_hi_list = None
+            if quality_dropping_max_lo > quality_dropping_min_hi:
+                quality = quality * 0.9
+                drop_from_lo_list = max_lo
+            elif quality_dropping_max_lo < quality_dropping_min_hi:
+                quality = quality * 0.9
+                drop_from_hi_list = min_hi
+            elif delta_index_lo > delta_index_hi:
+                quality = quality * 0.85
+                drop_from_lo_list = max_lo
+            elif delta_index_lo < delta_index_hi:
+                quality = quality * 0.85
+                drop_from_hi_list = min_hi
+            elif abs(break_index - max_lo[1]) < abs(break_index - min_hi[1]):
+                quality = quality * 0.8
+                drop_from_hi_list = min_hi
+            elif abs(break_index - max_lo[1]) > abs(break_index - min_hi[1]):
+                quality = quality * 0.8
+                drop_from_lo_list = max_lo
+            elif len(lower_index_list) > len(higher_index_list):  # and len(higher_index_list) == 1:
+                quality = quality * 0.75
+                drop_from_hi_list = min_hi
+            elif len(lower_index_list) < len(higher_index_list):  # and len(lower_index_list) == 1:
+                quality = quality * 0.75
+                drop_from_lo_list = max_lo
+            else:
+                quality = quality * 0.7 * 0.7  # wrong order, but cannot choose what to drop out
+                drop_from_hi_list = min_hi
+                drop_from_lo_list = max_lo
 
-            if max_lo > min_hi:
-                if d_lo > d_hi:
-                    FuzzySort.remove(list_lo, max_lo)
-                    return True
-                elif d_lo < d_hi:
-                    FuzzySort.remove(list_hi, min_hi)
-                    return True
-                else:
-                    # cannot drop both
-                    return False
+            if drop_from_lo_list is not None:
+                if self.debug:
+                    print("Dropped from lower side: " + str(drop_from_lo_list))
+                self.remove(lower_index_list, drop_from_lo_list)
+            if drop_from_hi_list is not None:
+                if self.debug:
+                    print("Dropped from higher side: " + str(drop_from_hi_list))
+                self.remove(higher_index_list, drop_from_hi_list)
+            if drop_from_hi_list is not None or drop_from_lo_list is not None:
+                quality = self.drop_irrelevant_values(lower_index_list,
+                                                      higher_index_list,
+                                                      quality=quality)  # recurse rest
 
         # list is in order or no point of removing anything
-        return False
+        return quality
 
+    def order_trend(self, sv_list):
+        plus = 0
+        minus = 0
+        equals = 0
 
-    @staticmethod
-    def remove(a_list, value):
+        if len(sv_list) < 2:
+            return 1
+
+        last_value = self.get_sort_value(sv_list[0])
+
+        for i in range(1, len(sv_list)):
+            current_value = self.get_sort_value(sv_list[i])
+            if not self.count_zeros and current_value == 0 or current_value is None or last_value is None:
+                if current_value is not None:
+                    last_value = current_value
+                continue
+            else:
+                direction = math.copysign(1, current_value - last_value) if current_value != last_value else 0
+                if direction > 0:
+                    plus += 1
+                elif direction < 0:
+                    minus += 1
+                else:
+                    equals += 1
+            last_value = current_value
+
+        # are all values the same? this means the list is perfectly ordered, thus returning 1
+        if plus == 0 and minus == 0 and equals > 0:
+            return 1
+
+        # equal amount of increments and decrements, completely unsorted list
+        if plus == minus:
+            return 0
+
+        # calculate fractional value how much there are steps going in to right direction - which is
+        # negative when descending
+        return (1 - minus / (plus + equals)) if plus > minus else -(1 - plus / (minus + equals))
+
+    def order_quality(self, sv_list):
+        valid_list = self.rip_off_none_values(sv_list)
+        count = len(valid_list)
+
+        if count < 2:
+            return 1
+
+        trend = self.order_trend(valid_list)
+        indexed_list = self.generate_indexed_sort_value_list(valid_list)
+        if self.descending_order_accepted and trend < 0:
+            indexed_list = self.generate_indexed_sort_value_list(sv_list, reverse_sorting=True)
+
+        if self.descending_order_accepted:
+            assumed_direction = math.copysign(1, trend)  # assumed direction is evaluated trend
+            if assumed_direction == 0:  # when zero, ascending order is preferred
+                assumed_direction == 1
+        else:
+            assumed_direction = 1  # makes descending order being always bad
+
+        last_value = indexed_list[0][0]
+        error_count = 0
+        for i in range(1, len(indexed_list)):
+            current_value = indexed_list[i][0]
+            if not self.count_zeros and current_value == 0 or current_value is None or last_value is None:
+                if indexed_list[i] is not None:
+                    last_value = indexed_list[i][0]
+                continue
+            else:
+                direction = math.copysign(1, current_value - last_value) if current_value != last_value else 0
+                if direction != assumed_direction and direction != 0:
+                    current_delta = abs(indexed_list[i][2] - indexed_list[i][1])
+                    previous_delta = abs(indexed_list[i-1][2] - indexed_list[i-1][1])
+                    delta_percentage = previous_delta / (count -1 ) + current_delta / (count - 1) / 2 + 0.75
+                    error_count += delta_percentage * 2
+
+            if indexed_list[i] is not None:
+                last_value = indexed_list[i][0]
+        quality = 1 - error_count / count
+        return quality
+
+    def test_trend_quality_by_dropping(self, lower_index_list, higher_index_list, drop_item):
+        test_list = lower_index_list + higher_index_list
+        self.remove(test_list, drop_item)
+        sv_list = self.unpack(test_list, 0)
+        return (self.order_trend(sv_list), self.order_quality(sv_list))
+
+    def get_sort_value(self, sv_or_tuple, tuple_index=0):
+        if type(sv_or_tuple) is tuple:
+            return sv_or_tuple[tuple_index]
+        else:
+            return sv_or_tuple
+
+    def decorate_with_original_index(self, sv_list):
+        i = 0
+        new_list = []
+        for value in sv_list:
+            new_list.append((value, i))
+            i += 1
+        return new_list
+
+    def decorate_with_sorted_index(self, one_index_sv_list):
+        i = 0
+        new_list = []
+        for value, index in one_index_sv_list:
+            new_list.append((value, index, i))
+            i += 1
+        return new_list
+
+    def decorate_to_indexed_sort_value_list(self, sv_list):
+        """
+        Generates a tuple list from numeric list to decorate item with their original index and index that they
+        would have after sorting
+        tuple = (value, original index, sorted index)
+
+        :param sv_list:
+        :return:
+        """
+        one_index_sv_list = self.decorate_with_original_index(sv_list)  # get one index list
+        # sort temporarily to get sorted index
+        temp_list = self.decorate_with_sorted_index(sorted(one_index_sv_list))
+        # revert to original order
+        return sorted(temp_list, key=lambda x: x[1])
+
+    def remove(self, a_list, value):
         if value not in a_list:
             return
         a_list.remove(value)
-        FuzzySort.remove(a_list, value)
+        self.remove(a_list, value) # recurse all instances
         return
 
-    @staticmethod
-    def get_min(a_list, count_zeros=True):
+    def insert_to_hi_list(self, indexed_list, value):  # not implemented, not needed now
+        #for i in range(0, len(indexed_list)):
+        #   if value[0] >= value[i]:
+        #       break
+        pass
+
+    def get_min(self, a_list):
         found_first = False
         lowest = 0
         lowest_item = None
@@ -983,15 +1260,14 @@ class FuzzySort():
                     value = None
             else:
                 value = item
-            if count_zeros or value != 0 and value is not None:
+            if self.count_zeros or value != 0 and value is not None:
                 if value < lowest or not found_first:
                     lowest = value
                     lowest_item = item
                     found_first = True
         return lowest_item
 
-    @staticmethod
-    def get_max(a_list, count_zeros=True):
+    def get_max(self, a_list):
         found_first = False
         highest = 0
         highest_item = None
@@ -1003,56 +1279,70 @@ class FuzzySort():
                     value = None
             else:
                 value = item
-            if count_zeros or value != 0:
+            if self.count_zeros or value != 0:
                 if value > highest or not found_first:
                     highest = value
                     highest_item = item
                     found_first = True
         return highest_item
 
-    @staticmethod
-    def order_trend(svlist, count_zeros=True):
-        plus = 0
-        minus = 0
-        equals = 0
+    def stddev(self, a_list):
+        valid_list = self.rip_off_none_values(a_list)
+        avg = self.mean(a_list)
+        temp = []
+        for x in valid_list:
+            temp.append((abs(x - avg)) ** 2)
+        return math.sqrt(self.mean(temp))
 
-        if len(svlist) < 2:
-            return 1
+    def median(self, a_list):
+        valid_list = sorted(self.rip_off_none_values(a_list))
+        items = len(valid_list)
+        if items % 2 == 0:
+            return (valid_list[items / 2 - 1] + valid_list[items / 2]) / 2.0
+        else:
+            return valid_list[items / 2]
 
-        last_value = svlist[0]
+    def count_valid(a_list):
+        c = 0
+        for value in a_list:
+            if value is not None and (value != 0 or self.count_zeros):
+                c += 1
+        return c
 
-        for i in range(1, len(svlist)):
-            if not count_zeros and svlist[i] == 0 or svlist[i] is None or last_value is None:
-                continue
+    def calc_sum(self, a_list):
+        s = 0
+        for value in a_list:
+            if value is not None and (value != 0 or self.count_zeros):
+                s += value
+        return s
+
+    def rip_off_none_values(self, a_list, tuple_index=0):
+        l = []
+        for item in a_list:
+            if type(item) is tuple:
+                value = item[tuple_index]
+                if value is not None and (value != 0 or self.count_zeros):
+                    l.append(item)
             else:
-                direction = math.copysign(1, svlist[i] - last_value) if svlist[i] != last_value else 0
-                if direction > 0:
-                    plus += 1
-                elif direction < 0:
-                    minus += 1
-                else:
-                    equals += 1
-            last_value = svlist[i]
+                value = item
+                if value is not None and (value != 0 or self.count_zeros):
+                    l.append(item)
+        return l
 
-        if plus == minus:
-            return 0
+    def mean(self, a_list):
+        return self.calc_sum(a_list, self.count_zeros) / float(self.count_valid(a_list))
 
-        return (1 - minus / (plus + equals)) if plus > minus else (1 - plus / (minus + equals))
-
-    @staticmethod
-    def has_dateless(sv_list):
-        for sv in sv_list:
-            if sv is None:
-                return True
-        return False
-
-    @staticmethod
-    def unpack(a_list, i):
+    def unpack(self, a_list, i):
         new_list = []
         for item in a_list:
             new_list.append(item[i])
         return new_list
 
+    def has_none_values(self, sv_list):
+        for sv in sv_list:
+            if sv is None:
+                return True
+        return False
 
 # ===================================================================================================================
 #
@@ -1080,6 +1370,7 @@ class ElementType():
     PLAINTEXT = 1
     OPTIONOPERATOR = 21
     BINDOPERATOR = 22
+
 
 # ------------------------------------------------------------
 #
