@@ -65,7 +65,7 @@ from gramps.gen.lib.date import Today
 import gramps.plugins.lib.libgedcom as libgedcom
 import math
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 
 try:
     _trans = glocale.get_addon_translator(__file__)
@@ -162,6 +162,8 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             self.include_tng_place_levels = 0
             self.omit_borough_from_address = 0
             self.move_patronymics = 0
+
+        self.db = self.dbase  # some methods copied from other plugins use this. just avoiding renaming.
 
         self.parser = FormatStringParser(self._place_keys)
         print("Gedcom Options " + __version__ + " loaded")
@@ -513,8 +515,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
         Returns a list of all places in a place tree
         """
 
-        db = self.dbase
-
         if date is None:
             date = Today()
         visited = [place.handle]
@@ -527,7 +527,7 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
                     handle = placeref.ref
             if handle is None or handle in visited:
                 break
-            place = db.get_place_from_handle(handle)
+            place = self.dbase.get_place_from_handle(handle)
             if place is None:
                 break
             visited.append(handle)
@@ -575,31 +575,12 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
         if self.sort_children:
             sorter = FuzzySort()
-            sorter.count_zeros = True
-            sorter.quality_treshold = 0.0
-            sorter.very_high_number = 2500
-            sorter.very_low_number = 1000
-            sorter.descending_order_accepted = False
             child_sort_list = sorter.fuzzysorted(child_sort_list)
 
         # Write to gedcom
         for (gid, sort_value) in child_sort_list:
             if gid is None: continue
             self._writeln(1, 'CHIL', '@%s@' % gid)
-
-    def decorate_by_birth(self, child_ref_list):
-        child_sort_list = []
-        for cref in child_ref_list:
-            gid = self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
-            birth_ref = self.dbase.get_person_from_handle(cref.ref).get_birth_ref()
-            if birth_ref is not None:
-                event = self.dbase.get_event_from_handle(birth_ref.ref)
-                dateobj = event.get_date_object()
-                val = self.parse_dateobject(dateobj)
-            else:
-                val = None
-            child_sort_list.append((gid, val))
-        return child_sort_list
 
     #---------------
     # Sort Events
@@ -628,13 +609,12 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
         event_sort_list = self.decorate_by_date(event_ref_list)
 
         if self.sort_events:
-            sorter = FuzzySort()
-            sorter.count_zeros = True
-            sorter.quality_treshold = 0.0
-            sorter.very_high_number = 2500
-            sorter.very_low_number = 1000
-            sorter.descending_order_accepted = False
+            sorter = FuzzySort(unsortables_last=False)
             event_sort_list = sorter.fuzzysorted(event_sort_list)
+            ## finally, sort birth based events first and death based events last
+            event_sort_list = self.decorate_by_event_type(event_ref_list)
+            event_sort_list = sorted(event_sort_list, key=lambda x: x[1])
+            event_ref_list = sorter.unpack(event_sort_list, 0)
 
         for (event_ref, sort_value) in event_sort_list:  # person.get_event_ref_list():
             event = self.dbase.get_event_from_handle(event_ref.ref)
@@ -655,12 +635,7 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
         event_sort_list = self.decorate_by_date(event_ref_list)
 
         if self.sort_events:
-            sorter = FuzzySort()
-            sorter.count_zeros = True
-            sorter.quality_treshold = 0.0
-            sorter.very_high_number = 2500
-            sorter.very_low_number = 1000
-            sorter.descending_order_accepted = False
+            sorter = FuzzySort(unsortables_last=False)
             event_sort_list = sorter.fuzzysorted(event_sort_list)
 
         for (event_ref, sort_value) in event_sort_list:  ## family.get_event_ref_list():
@@ -669,30 +644,41 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             self._process_family_event(event, event_ref)
             self._dump_event_stats(event, event_ref)
 
+    def decorate_by_birth(self, child_ref_list):
+        child_sort_list = []
+        for cref in child_ref_list:
+            birth_ref = self.db.get_person_from_handle(cref.ref).get_birth_ref()
+            if birth_ref is not None:
+                event = self.db.get_event_from_handle(birth_ref.ref)
+                val = event.get_date_object().get_sort_value()
+                if val == 0:
+                    val = None
+            else:
+                val = None
+            child_sort_list.append((cref, val))
+        return child_sort_list
+
     def decorate_by_date(self, event_ref_list):
         event_sort_list = []
         for event_ref in event_ref_list:
             if event_ref is not None:
-                event = self.dbase.get_event_from_handle(event_ref.ref)
-                dateobj = event.get_date_object()
-                val = self.parse_dateobject(dateobj)
+                event = self.db.get_event_from_handle(event_ref.ref)
+                val = event.get_date_object().get_sort_value()
+                if val == 0:
+                    val = None
             else:
                 val = None
             event_sort_list.append((event_ref, val))
         return event_sort_list
 
-    def decorate_by_date_and_event_type(self, event_ref_list):
+    def decorate_by_event_type(self, event_ref_list):
         event_sort_list = []
         for event_ref in event_ref_list:
-            modifier = 0
             if event_ref is not None:
-                event = self.db.get_event_from_handle(event_ref.ref)
-                dateobj = event.get_date_object()
-                val = self.parse_dateobject(dateobj)
-                modifier = self.get_event_type_sort_modifier(event_ref)
+                val = self.get_event_type_sort_modifier(event_ref)
             else:
-                val = None
-            event_sort_list.append((event_ref, val, modifier))
+                val = 0
+            event_sort_list.append((event_ref, val))
         return event_sort_list
 
     def get_event_type_sort_modifier(self, event_ref):
@@ -709,45 +695,6 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             val = 3002
         if event_type == EventType.PROBATE:
             val = 3003
-        return val
-
-    def parse_dateobject(self, date):
-        """
-
-        """
-        start = date.get_start_date()
-        if start != Date.EMPTY:
-            mod = date.get_modifier()
-            if mod == Date.MOD_SPAN or mod == Date.MOD_RANGE:
-                stop = date.get_stop_date()
-                val = (self.get_numeric_date(start) + self.get_numeric_date(stop)) / 2
-            else:
-                val = self.get_numeric_date(start)
-                if mod == Date.MOD_AFTER:
-                    val += 0.999
-                if mod == Date.MOD_BEFORE:
-                    val -= 0.999
-        else:
-            val = None
-        return val
-
-    def get_numeric_date(self, date):
-        day = date[0]
-        mon = date[1]
-        year = date[2]
-        if day is 0:
-            day = 15
-        if mon is 0:
-            val = year + 0.5
-        else:
-            days_passed = 0
-            for i in range(1, mon - 1):
-                days_passed += self._days_in_month[i]
-            if mon is not 0:
-                days_passed += day
-            else:
-                days_passed += self._days_in_month[mon] / 2
-            val = year + days_passed / 365
         return val
 
     def has_individuals_without_birthdate(self, a_list):
@@ -803,7 +750,7 @@ class GedcomWriterOptionBox(WriterOptionBox):
         self.sort_children_check = \
             Gtk.CheckButton(_("Smart sort children"))
         self.sort_events_check = \
-            Gtk.CheckButton(_("Sort events"))
+            Gtk.CheckButton(_("Smart sort events"))
         self.reversed_places_check = \
             Gtk.CheckButton(_("Reverse order place components"))
         self.export_only_useful_pe_addresses_check = \
@@ -895,8 +842,40 @@ def export_data(database, filename, user, option_box=None):
 #
 # ===================================================================================================================
 
-class FuzzySort():
+class DropCriteria():
+    LONELY_NEIGHBOUR = "LonelyNeighbour"
+    GOOD_NEIGHBOUR = "GoodNeighbour"
+    VERY_GOOD_NEIGHBOUR = "VeryGoodNeighbour"
+    SORT_QUALITY = "Quality"
+    TREND = "Trend"
+    DISPLACEMENT = "Displacement"
+    DISTANCE = "Distance"
+    REMAINING_LENGTH = "Length"
+    REMAINING_LENGTH_1 = "Length=1"
+    DROPPABLES = "Droppables"
+    UNDETERMINED = "Undetermined"
+    VOTE = "Vote"
 
+
+class DropSide():
+    LOW = -1
+    HIGH = 1
+    BOTH = 2
+    NONE = 0
+
+
+class Color:
+    NORMAL = '\033[0m'  # white (normal)
+    RED = '\033[31m'  # red
+    GREEN = '\033[32m'  # green
+    ORANGE = '\033[33m'  # orange
+    BLUE = '\033[34m'  # blue
+    PURPLE = '\033[35m'  # purple
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+class FuzzySort():
     # Uses internally this type of temporary tuple decorated lists:
     # decorated_list: (object, sort value)  INPUT LIST!
     # sv_list: ('nullable' sort value)
@@ -907,88 +886,129 @@ class FuzzySort():
     # trend: -1 to 1 depending if the list is descending or ascending. fractional if there are oddities (needs sorting)
     # quality 0 to 1 measures how well the list is in order
 
-    # Todo:
+    # TODO:
     # Quality tresholds are not used at all atm
+    __version__ = "0.5"
 
-    __version__ = "0.2.2"
-
-    quality_treshold = 0.0
-    very_low_number = -99999
-    very_high_number = 99999
-    descending_order_accepted = False
-    count_zeros = True
+    order_quality_treshold = 0.4
+    trend_treshold = 0.2
+    very_low_number = -1000000000000000
+    very_high_number = 1000000000000000
+    descending_order_accepted = False  # not properly implemented
+    zero_is_sortable = True
     unsortables_last = True
     debug = False
+    evaluation_quality_treshold = 0.7
 
-    def __init__(self):
-        pass
+    def __init__(self, order_quality_treshold=0.4,
+                 trend_treshold= 0.2,
+                 descending_accepted=False,
+                 zero_is_sortable=True,
+                 unsortables_last=True,
+                 low_value =-1000000000000000,
+                 high_value=1000000000000000,
+                 debug=False,
+                 evaluation_quality_treshold=0.7
+                 ):
+        self.order_quality_treshold = order_quality_treshold
+        self.trend_treshold = trend_treshold
+        self.descending_order_accepted = descending_accepted
+        self.zero_is_sortable = zero_is_sortable
+        self.unsortables_last = unsortables_last
+        self.very_low_number = low_value
+        self.very_high_number = high_value
+        self.debug = debug
+        self.evaluation_quality_treshold = evaluation_quality_treshold
+
+    def fuzzysort(self, decorated_list):
+        decorated_list = self.fuzzysorted(decorated_list)
 
     def fuzzysorted(self, decorated_list):
-        sv_list = [x[1] for x in decorated_list]
-        trend = self.order_trend(sv_list)
+        sv_list = self.__get_sort_value_list(decorated_list)
+        trend = self.__order_trend(sv_list)
 
-        # this is for debuggin only
-        # quality checks are needed only when estimating missing sort values
-        quality = self.order_quality(sv_list)
-
-        # list is in perfect order, don't sort
-        if trend == 1:
+        if len(decorated_list) == 0:
             return decorated_list
 
-        # no dateless items, no guessing needed
-        if not self.has_none_values(sv_list):
-            return sorted(decorated_list, key=lambda x: x[1])
-
-        # guess dateless items and sort
+        # evaluate missing sort values and sort
+        evaluated_list = self.__evaluate_missing_sort_values(decorated_list)
+        sorted_list = sorted(evaluated_list, key=lambda x: x[1])
         if self.debug:
-            print(decorated_list)
-            print("Trend: " + str(trend))
-            print("Quality: " + str(quality))
-        sorted_list = sorted(self.estimate_missing_sort_values(decorated_list), key=lambda x: x[1])
-        if self.debug:
-            print(sorted_list)
-            print("-----------")
+            print("Sorted list: ", end="")
+            self.__debug_print_sv_list(sorted_list)
         return sorted_list
 
-    def estimate_missing_sort_values(self, decorated_list):
+    def __evaluate_missing_sort_values(self, decorated_list):
         new_list = list(decorated_list)
         unsortables_base_value = self.very_high_number if self.unsortables_last else self.very_low_number
 
         # extract sort value list from tuple list, could use also self.unpack(decorated_list, 1)
-        sv_list = [x[1] for x in decorated_list]
-        trend = self.order_trend(sv_list)
+        sv_list = self.__get_sort_value_list(decorated_list)
+        trend = self.__order_trend(sv_list)
+        quality = self.__order_quality(sv_list)
+
+        if self.debug:
+            #print(decorated_list)
+            print("Unsorted list: ", end="")
+            self.__debug_print_sv_list(decorated_list)
+            print("Trend: " + str(round(trend,4)))
+            print("Quality: " + str(round(quality,4)))
+
+        evaluation_failed = False
+        if quality >= self.order_quality_treshold and trend >= self.trend_treshold:
+            i = 0
+            for item in new_list:
+                value = item[0]
+                sort_value = item[1]
+                if self.__is_unsortable(sort_value):
+                    sort_value, evaluation_quality = self.__evaluate_sort_value(sv_list, i, trend)
+                    if evaluation_quality < self.evaluation_quality_treshold:
+                        evaluation_failed = True
+                    new_list[i] = (value, sort_value)
+                i += 1
+
+        if evaluation_failed:
+            new_list = list(decorated_list)
 
         i = 0
-        for value, sort_value in decorated_list:
-            if sort_value == None or (self.count_zeros is False and sort_value == 0):
-                sort_value = self.estimate_sortvalue(sv_list, i, trend)
-                if sort_value:
-                    new_list[i] = (value, sort_value)
-                else:
-                    # cannot estimate sort value, use something that throws the item to the begining or the end
-                    if new_list[i][1] is None:
-                        new_list[i] = (value, unsortables_base_value + i) #sort last or first but keep original order
+        for item in new_list:
+            value = item[0]
+            sort_value = item[1]
+            if self.__is_unsortable(sort_value):
+                new_list[i] = (value, unsortables_base_value)
             i += 1
 
         return new_list
 
-    def estimate_sortvalue(self, sv_list, break_index, trend):
+    def __evaluate_sort_value(self, sv_list, break_index, trend):
         """
-        Estimates sort value for items that are not sortable
+        evaluates sort value for items that are not sortable
 
         :param sv_list: a partial list that comes before the index value
         :param list2: a partial list that comes after the index value
         :param count_zeros: consider zeros as legal values, not non-sortables
-        :return: sort value or None if unable to estimate
+        :return: sort value or None if unable to evaluate
         """
-        valid1 = list(self.rip_off_none_values(sv_list[:break_index]))
-        valid2 = list(self.rip_off_none_values(sv_list[break_index + 1:]))
+        valid1 = list(self.__remove_unsortables(sv_list[:break_index]))
+        valid2 = list(self.__remove_unsortables(sv_list[break_index+1:]))
         full_valid = valid1 + valid2
+        target = (None, break_index, None)
 
         # INDEXED LIST FORMED HERE
-        indexed_list = self.generate_indexed_sort_value_list(full_valid)
-        indexed_list_1 = indexed_list[:len(valid1)]
-        indexed_list_2 = indexed_list[len(valid1):]
+        indexed_list = self.__generate_indexed_sort_value_list(valid1 + valid2)
+        # increment all indexes above break index (virtually inserting unsortable between lists)
+        i = 0
+        for sv, i1, i2 in indexed_list:
+            if i2 >= break_index:
+                i2 += 1
+            if i1 >= break_index:
+                i1 += 1
+            indexed_list[i] = (sv, i1, i2)
+            i += 1
+        last_index = i
+
+        indexed_list_1 = indexed_list[:break_index]
+        indexed_list_2 = indexed_list[break_index:]
 
         if trend >= 0 or self.descending_order_accepted is False:
             lower_indexed_list = list(indexed_list_1)
@@ -997,29 +1017,40 @@ class FuzzySort():
             lower_indexed_list = list(indexed_list_2)
             higher_indexed_list = list(indexed_list_1)
 
-        # remove irrelevant values from lists. values that should belong to the other list are considered
+        #kokolista = lower_indexed_list + [target]+ higher_indexed_list
+        #print(kokolista)
+
+        # __remove_from_list irrelevant values from lists. values that should belong to the other list are considered
         # irrelevant
         if self.debug:
-            print("Estimating at index: " + str(break_index))
-        estimation_quality = self.drop_irrelevant_values(lower_indexed_list, higher_indexed_list)
-        if self.debug:
-            print("Estimation quality: " + str(estimation_quality))
-        if estimation_quality < self.quality_treshold:
-            return None
+            print("Evaluating at index: " + str(break_index))
+        evaluation_quality = self.__drop_irrelevant_values(lower_indexed_list,
+                                                           higher_indexed_list,
+                                                           target,
+                                                           last_index)
 
-        max_lo = self.get_max(lower_indexed_list)  # index tuple (sv, original, sorted)
-        min_hi = self.get_min(higher_indexed_list) # index tuple (sv, original, sorted)
+        max_lo = self.__get_max(lower_indexed_list)  # index tuple (sv, original, sorted), index
+        min_hi = self.__get_min(higher_indexed_list) # index tuple (sv, original, sorted), index
         if max_lo is None:
             if min_hi is None:
-                return None
+                evaluated_sort_value = None
             else:
-                return min_hi[0]
+                evaluated_sort_value = min_hi[0]
         elif min_hi is None:
-            return max_lo[0]
+            evaluated_sort_value = max_lo[0]
+        else:
+            evaluated_sort_value = (min_hi[0] + max_lo[0]) / 2.0
 
-        return (min_hi[0] + max_lo[0]) / 2.0
+        if self.debug:
+            print("  => Result: " + Color.BOLD + str(evaluated_sort_value) + Color.NORMAL + ", Quality: "
+                  + str(round(evaluation_quality,4)))
 
-    def generate_indexed_sort_value_list(self, sv_list, reverse_sorting=False):
+        if evaluation_quality < self.evaluation_quality_treshold:
+            return None, evaluation_quality
+
+        return evaluated_sort_value, evaluation_quality
+
+    def __generate_indexed_sort_value_list(self, sv_list, reverse_sorting=False):
         """
         Generates a tuple list from numeric list to decorate item with their original index and index that they
         would have after sorting
@@ -1029,15 +1060,22 @@ class FuzzySort():
         :param reverse_sorting:
         :return:
         """
-        indexed_list = self.decorate_with_original_index(sv_list)  # store original index to be able to revert
+        indexed_list = self.__decorate_with_original_index(sv_list)  # store original index to be able to revert
         # sort and store sorted index
-        temp_list = self.decorate_with_sorted_index(sorted(indexed_list, reverse=reverse_sorting))
+        temp_list = self.__decorate_with_sorted_index(sorted(indexed_list, reverse=reverse_sorting))
         # revert to original order
         return sorted(temp_list, key=lambda x: x[1])
 
         #return (self.remove_first_decoration(temp_list))
 
-    def drop_irrelevant_values(self, lower_index_list, higher_index_list, quality=1):
+    ####### DROPPING #######
+    def __drop_irrelevant_values(self, lower_index_list,
+                                 higher_index_list,
+                                 target,
+                                 last_index,
+                                 recursing_quality=1,
+                                 moved_to_lo=None,
+                                 moved_to_hi=None):
         """
         Checks if two lists have values that would rather belong to the other list,
 
@@ -1046,87 +1084,249 @@ class FuzzySort():
         :param count_zeros:
         :return:
         """
+
+        if moved_to_lo is None:
+            moved_to_lo = []
+        if moved_to_hi is None:
+            moved_to_hi = []
+
         if not higher_index_list or not lower_index_list:
-            return quality
+            return recursing_quality
 
-        max_lo = self.get_max(lower_index_list)  # index tuple (sv, original, sorted)
-        min_hi = self.get_min(higher_index_list)  # index tuple (sv, original, sorted)
+        _straight_thru = 0.97
+        _vote_low = 0.93
 
-        trend_dropping_max_lo, quality_dropping_max_lo = \
-            self.test_trend_quality_by_dropping(lower_index_list, higher_index_list, max_lo)
-        trend_dropping_min_hi, quality_dropping_min_hi = \
-            self.test_trend_quality_by_dropping(lower_index_list, higher_index_list, min_hi)
+        max_lo = self.__get_max(lower_index_list)  # index tuple (sv, original, sorted)
+        min_hi = self.__get_min(higher_index_list)  # index tuple (sv, original, sorted)
 
-        if (self.descending_order_accepted):
-            trend_dropping_max_lo = abs(trend_droppping_max_lo)
-            trend_dropping_min_hi = abs(trend_droppping_min_hi)
+        if min_hi[0] < max_lo[0]:  # values in both lists overlap -> dropping needed
+            # determine which list is better candidate for dropping most irrelevant value
+            drop_criterias = []
+            drop_side = None
+            list_len = len(lower_index_list) + len(higher_index_list)
 
-        break_index = len(lower_index_list)
+            # Criteria: Find second 'best' values
+            temp_list = list(lower_index_list)
+            temp_list.remove(max_lo)
+            scnd_max_lo = self.__get_max(temp_list)
+            temp_list = list(higher_index_list)
+            temp_list.remove(min_hi)
+            scnd_min_hi = self.__get_min(temp_list)
+            target_index = target[1]
 
-        if min_hi[0] < max_lo[0]:  # are lists not in perfect order
-            # when not, find which have value is most useful to drop out
+            is_scnd_lo_neighbour = False
+            is_scnd_lo_droppable = False
+            if scnd_max_lo is not None:
+                is_scnd_lo_neighbour = scnd_max_lo[1] + 1 == target_index
+                is_scnd_lo_droppable = scnd_max_lo[0] < min_hi[0]
+            is_scnd_hi_neighbour = False
+            is_scnd_hi_droppable = False
+            if scnd_min_hi is not None:
+                is_scnd_hi_neighbour = scnd_min_hi[1] - 1 == target_index
+                is_scnd_hi_droppable = max_lo[0] > scnd_min_hi[0]
+            is_max_lo_lonely_neighbour = max_lo[1] + 1 == target_index and max_lo[1] == 0
+            is_min_hi_lonely_neighbour = min_hi[1] - 1 == target_index and min_hi[1] == last_index
+
+            if is_scnd_lo_neighbour and not is_scnd_hi_neighbour:
+                drop_criterias.append((DropCriteria.GOOD_NEIGHBOUR, DropSide.LOW, 0.97))
+            if is_scnd_hi_neighbour and not is_scnd_lo_neighbour:
+                drop_criterias.append((DropCriteria.GOOD_NEIGHBOUR, DropSide.HIGH, 0.97))
+            if is_scnd_lo_neighbour and not is_scnd_lo_droppable and (not is_scnd_hi_neighbour or is_scnd_hi_droppable) and scnd_min_hi is not None:
+                drop_criterias.append((DropCriteria.VERY_GOOD_NEIGHBOUR, DropSide.LOW, 0.99))
+            if is_scnd_hi_neighbour and not is_scnd_lo_droppable and (not is_scnd_lo_neighbour or is_scnd_lo_droppable) and scnd_max_lo is not None:
+                drop_criterias.append((DropCriteria.VERY_GOOD_NEIGHBOUR, DropSide.HIGH, 0.99))
+            if is_max_lo_lonely_neighbour and not is_min_hi_lonely_neighbour:
+                pass # drop_criterias.append((DropCriteria.LONELY_NEIGHBOUR, DropSide.HIGH, 0.92))
+            if is_min_hi_lonely_neighbour and not is_max_lo_lonely_neighbour:
+                pass # drop_criterias.append((DropCriteria.LONELY_NEIGHBOUR, DropSide.HIGH, 0.92)) ## note the same choice
+
+            # criteria:
+            count_of_droppables_lo_list = self.__calc_items_on_wrong_side_lo(lower_index_list, min_hi)
+            count_of_droppables_hi_list = self.__calc_items_on_wrong_side_hi(higher_index_list, max_lo)
+            ##
+            if count_of_droppables_hi_list > count_of_droppables_lo_list:
+                drop_criterias.append((DropCriteria.DROPPABLES, DropSide.LOW, 0.96))
+            if count_of_droppables_hi_list < count_of_droppables_lo_list:
+                drop_criterias.append((DropCriteria.DROPPABLES, DropSide.HIGH, 0.96))
+
+            # 2 criterias: order quality and trend after dropping
+            trend_dropping_max_lo, quality_dropping_max_lo = \
+                self.__test_trend_quality_by_dropping(lower_index_list, higher_index_list, max_lo)
+            trend_dropping_min_hi, quality_dropping_min_hi = \
+                self.__test_trend_quality_by_dropping(lower_index_list, higher_index_list, min_hi)
+            if (self.descending_order_accepted):
+                trend_dropping_max_lo = abs(trend_droppping_max_lo)
+                trend_dropping_min_hi = abs(trend_droppping_min_hi)
+
+            ##
+            if quality_dropping_max_lo > quality_dropping_min_hi:
+                drop_criterias.append((DropCriteria.SORT_QUALITY, DropSide.LOW, 0.95))
+            if quality_dropping_max_lo < quality_dropping_min_hi:
+                drop_criterias.append((DropCriteria.SORT_QUALITY, DropSide.HIGH, 0.95))
+
+            if trend_dropping_max_lo > trend_dropping_min_hi:
+                pass  # drop_criterias.append((DropCriteria.TREND, DropSide.LOW, 0.83))
+            if trend_dropping_max_lo < trend_dropping_min_hi:
+                pass  # drop_criterias.append((DropCriteria.TREND, DropSide.HIGH, 0.83))
+
+            # 3rd criteria: distance between sorted and original indexes, bigger is worse -> drop from there
             delta_index_lo = abs(max_lo[1] - max_lo[2])
             delta_index_hi = abs(min_hi[1] - min_hi[2])
-            drop_from_lo_list = None
-            drop_from_hi_list = None
-            if quality_dropping_max_lo > quality_dropping_min_hi:
-                quality = quality * 0.9
-                drop_from_lo_list = max_lo
-            elif quality_dropping_max_lo < quality_dropping_min_hi:
-                quality = quality * 0.9
-                drop_from_hi_list = min_hi
-            elif delta_index_lo > delta_index_hi:
-                quality = quality * 0.85
-                drop_from_lo_list = max_lo
-            elif delta_index_lo < delta_index_hi:
-                quality = quality * 0.85
-                drop_from_hi_list = min_hi
-            elif abs(break_index - max_lo[1]) < abs(break_index - min_hi[1]):
-                quality = quality * 0.8
-                drop_from_hi_list = min_hi
-            elif abs(break_index - max_lo[1]) > abs(break_index - min_hi[1]):
-                quality = quality * 0.8
-                drop_from_lo_list = max_lo
-            elif len(lower_index_list) > len(higher_index_list):  # and len(higher_index_list) == 1:
-                quality = quality * 0.75
-                drop_from_hi_list = min_hi
-            elif len(lower_index_list) < len(higher_index_list):  # and len(lower_index_list) == 1:
-                quality = quality * 0.75
-                drop_from_lo_list = max_lo
-            else:
-                quality = quality * 0.7 * 0.7  # wrong order, but cannot choose what to drop out
-                drop_from_hi_list = min_hi
-                drop_from_lo_list = max_lo
+            ##
+            if delta_index_lo > delta_index_hi:
+                drop_criterias.append((DropCriteria.DISPLACEMENT, DropSide.LOW, 0.94))
+            if delta_index_lo < delta_index_hi:
+                drop_criterias.append((DropCriteria.DISPLACEMENT, DropSide.HIGH, 0.94))
 
-            if drop_from_lo_list is not None:
-                if self.debug:
-                    print("Dropped from lower side: " + str(drop_from_lo_list))
-                self.remove(lower_index_list, drop_from_lo_list)
-            if drop_from_hi_list is not None:
-                if self.debug:
-                    print("Dropped from higher side: " + str(drop_from_hi_list))
-                self.remove(higher_index_list, drop_from_hi_list)
-            if drop_from_hi_list is not None or drop_from_lo_list is not None:
-                quality = self.drop_irrelevant_values(lower_index_list,
-                                                      higher_index_list,
-                                                      quality=quality)  # recurse rest
+
+            #  criteria: distance to index of item to be evaluated, bigger is worse -> drop from there
+            target_index = len(lower_index_list)
+            ##
+            if abs(target_index - max_lo[1]) > abs(target_index - min_hi[1]):
+                drop_criterias.append((DropCriteria.DISTANCE, DropSide.LOW, 0.93))
+            if abs(target_index - max_lo[1]) < abs(target_index - min_hi[1]):
+                drop_criterias.append((DropCriteria.DISTANCE, DropSide.HIGH, 0.93))
+
+            # criteria: REMAINING LENGTH, remaining length or lists, shorter is worse -> drop from it
+            ##
+            if len(lower_index_list) < len(higher_index_list):
+                if len(lower_index_list) == 1:
+                    pass # drop_criterias.append((DropCriteria.REMAINING_LENGTH_1, DropSide.LOW, 0.81))
+                else:
+                    pass  # drop_criterias.append((DropCriteria.REMAINING_LENGTH, DropSide.LOW, 0.80))
+            if len(lower_index_list) > len(higher_index_list):
+                if len(higher_index_list) == 1:
+                    pass  # drop_criterias.append((DropCriteria.REMAINING_LENGTH_1, DropSide.HIGH, 0.76))
+                else:
+                    pass  # drop_criterias.append((DropCriteria.REMAINING_LENGTH, DropSide.HIGH, 0.80))
+
+            # CHECK THIS LAST: both sides are equally good candidates, drop from higher list
+            if len(drop_criterias) == 0:
+                drop_criterias.append((DropCriteria.UNDETERMINED, DropSide.HIGH, 0.85))
+
+            # sort to get best criterias first
+            drop_criterias = sorted(drop_criterias, key=lambda x: x[2], reverse=True)
+
+            drop_side = drop_criterias[0][1]  # the result of first matching criteria
+            drop_reason = drop_criterias[0][0]
+            quality = drop_criterias[0][2]
+
+            disagrees = 0
+            agrees = 0
+
+            if drop_reason != DropCriteria.UNDETERMINED:
+
+                # VOTING
+                votes_lo = 0
+                votes_hi = 0
+                vote_count = 0
+                for criteria in drop_criterias:
+                    if criteria[2] > _straight_thru:
+                        drop_side = drop_criterias[0][1]  # the result of first matching criteria
+                        drop_reason = drop_criterias[0][0]
+                        break
+                    if _vote_low <= criteria[2] <= _straight_thru:
+                        if criteria[1] == DropSide.LOW:
+                            votes_lo += criteria[2]
+                        else:
+                            votes_hi += criteria[2]
+                        vote_count += 1
+                    if votes_hi == 0 and votes_lo == 0 and criteria[2] < _vote_low:
+                        drop_reason = criteria[0]
+                        drop_side = criteria[1]
+
+                if votes_hi + votes_lo > 0:
+                    drop_side = DropSide.LOW if votes_lo > votes_hi else DropSide.HIGH
+                    drop_reason = DropCriteria.VOTE
+                    quality = (votes_hi + votes_lo) / vote_count
+
+                # DISAGREE CALC
+                for criteria in drop_criterias:
+                    if criteria[2] >= _vote_low:
+                        if criteria[1] == drop_side:
+                            agrees += criteria[2]
+                        else:
+                            disagrees += criteria[2]
+
+                agreement_factor = 1 - disagrees / (agrees + disagrees) / 10
+
+                quality = quality * agreement_factor
+
+            recursing_quality = quality * recursing_quality
+
+            if self.debug:
+                self.__debug_print(lower_index_list, higher_index_list, drop_side)
+
+            # actual dropping
+
+            if drop_side == DropSide.LOW or drop_side == DropSide.BOTH:
+                self.__remove_from_list(lower_index_list, max_lo)  # Drops
+                moved_to_hi.append(max_lo)
+            if drop_side == DropSide.HIGH or drop_side == DropSide.BOTH:
+                self.__remove_from_list(higher_index_list, min_hi)  # DROPS
+                moved_to_lo.append(min_hi)
+
+            if self.debug:
+                self.__debug_print(lower_index_list, higher_index_list, DropSide.NONE)
+                side = "HIGH" if drop_side == DropSide.HIGH else "LOW"
+                print("  Evaluation based on: " + drop_reason + "->" + side + " /// ", end="")
+                i = 0
+                for item in drop_criterias:
+                    if i == 0 and item[2] >= 0.95:
+                        pass
+                    side = "HIGH" if item[1]==DropSide.HIGH else "LOW"
+                    print("" + item[0] + "->" + side + "  ", end="")
+                    i += 1
+                sv_list = self.unpack(lower_index_list + higher_index_list, 0)
+                ttrend = self.__order_trend(sv_list)
+                tquality = self.__order_quality(sv_list)
+                print(" Q:" + str(round(tquality, 4)) + "  T: " + str(round(ttrend, 4)))
+
+            if drop_side != None and drop_side != DropSide.NONE:
+                recursing_quality = self.__drop_irrelevant_values(lower_index_list,
+                                                                  higher_index_list,
+                                                                  target,
+                                                                  last_index,
+                                                                  recursing_quality,
+                                                                  moved_to_lo, moved_to_hi)  # recurse rest
+
+                return recursing_quality
 
         # list is in order or no point of removing anything
-        return quality
 
-    def order_trend(self, sv_list):
+        if self.debug:
+            self.__debug_print(moved_to_lo + lower_index_list, higher_index_list + moved_to_hi, DropSide.NONE)
+            self.__debug_print(sorted(moved_to_lo + lower_index_list), sorted(higher_index_list + moved_to_hi), DropSide.NONE)
+
+        return recursing_quality
+
+    def __calc_items_on_wrong_side_lo(self, lower_index_list, min_hi):
+        count = 0
+        for item in lower_index_list:
+            if item[0] > min_hi[0]:
+                count += 1
+        return count
+
+    def __calc_items_on_wrong_side_hi(self, higher_index_list, max_lo):
+        count = 0
+        for item in higher_index_list:
+            if item[0] < max_lo[0]:
+                count += 1
+        return count
+
+    def __order_trend(self, sv_list):
         plus = 0
         minus = 0
-        equals = 0
+        equals = 1  # first item considered equal to be counted a good one
 
         if len(sv_list) < 2:
             return 1
 
-        last_value = self.get_sort_value(sv_list[0])
+        last_value = self.__get_sort_value(sv_list[0])
 
         for i in range(1, len(sv_list)):
-            current_value = self.get_sort_value(sv_list[i])
-            if not self.count_zeros and current_value == 0 or current_value is None or last_value is None:
+            current_value = self.__get_sort_value(sv_list[i])
+            if self.__is_unsortable(current_value) or self.__is_unsortable(last_value):
                 if current_value is not None:
                     last_value = current_value
                 continue
@@ -1145,29 +1345,29 @@ class FuzzySort():
             return 1
 
         # equal amount of increments and decrements, completely unsorted list
-        if plus == minus:
-            return 0
+        # if plus == minus:
+        #    return 0
 
         # calculate fractional value how much there are steps going in to right direction - which is
         # negative when descending
-        return (1 - minus / (plus + equals)) if plus > minus else -(1 - plus / (minus + equals))
+        return (1 - minus / (plus + equals)) if plus >= minus else -(1 - plus / (minus + equals))
 
-    def order_quality(self, sv_list):
-        valid_list = self.rip_off_none_values(sv_list)
-        count = len(valid_list)
+    def __order_quality(self, sv_list):
+        valid_list = self.__remove_unsortables(sv_list)
+        list_len = len(valid_list)
 
-        if count < 2:
+        if list_len < 2:
             return 1
 
-        trend = self.order_trend(valid_list)
-        indexed_list = self.generate_indexed_sort_value_list(valid_list)
+        trend = self.__order_trend(valid_list)
+        indexed_list = self.__generate_indexed_sort_value_list(valid_list)
         if self.descending_order_accepted and trend < 0:
-            indexed_list = self.generate_indexed_sort_value_list(sv_list, reverse_sorting=True)
+            indexed_list = self.__generate_indexed_sort_value_list(sv_list, reverse_sorting=True)
 
         if self.descending_order_accepted:
             assumed_direction = math.copysign(1, trend)  # assumed direction is evaluated trend
             if assumed_direction == 0:  # when zero, ascending order is preferred
-                assumed_direction == 1
+                assumed_direction = 1
         else:
             assumed_direction = 1  # makes descending order being always bad
 
@@ -1175,36 +1375,38 @@ class FuzzySort():
         error_count = 0
         for i in range(1, len(indexed_list)):
             current_value = indexed_list[i][0]
-            if not self.count_zeros and current_value == 0 or current_value is None or last_value is None:
+            if self.__is_unsortable(current_value) or self.__is_unsortable(last_value):
                 if indexed_list[i] is not None:
                     last_value = indexed_list[i][0]
                 continue
             else:
                 direction = math.copysign(1, current_value - last_value) if current_value != last_value else 0
                 if direction != assumed_direction and direction != 0:
-                    current_delta = abs(indexed_list[i][2] - indexed_list[i][1])
+                    current_delta = abs(indexed_list[i][2] - indexed_list[i][1])  # delta between original and new pos
                     previous_delta = abs(indexed_list[i-1][2] - indexed_list[i-1][1])
-                    delta_percentage = previous_delta / (count -1 ) + current_delta / (count - 1) / 2 + 0.75
+                    delta_percentage = (previous_delta / list_len + current_delta / list_len) / 2 + 1.5
                     error_count += delta_percentage * 2
 
             if indexed_list[i] is not None:
                 last_value = indexed_list[i][0]
-        quality = 1 - error_count / count
+        quality = 1 - error_count / (12 + list_len * 0.75)
         return quality
 
-    def test_trend_quality_by_dropping(self, lower_index_list, higher_index_list, drop_item):
+    def __test_trend_quality_by_dropping(self, lower_index_list, higher_index_list, drop_item):
         test_list = lower_index_list + higher_index_list
-        self.remove(test_list, drop_item)
+        self.__remove_from_list(test_list, drop_item)
         sv_list = self.unpack(test_list, 0)
-        return (self.order_trend(sv_list), self.order_quality(sv_list))
+        return (self.__order_trend(sv_list), self.__order_quality(sv_list))
 
-    def get_sort_value(self, sv_or_tuple, tuple_index=0):
+    @staticmethod
+    def __get_sort_value(sv_or_tuple, tuple_index=0):
         if type(sv_or_tuple) is tuple:
             return sv_or_tuple[tuple_index]
         else:
             return sv_or_tuple
 
-    def decorate_with_original_index(self, sv_list):
+    @staticmethod
+    def __decorate_with_original_index(sv_list):
         i = 0
         new_list = []
         for value in sv_list:
@@ -1212,7 +1414,8 @@ class FuzzySort():
             i += 1
         return new_list
 
-    def decorate_with_sorted_index(self, one_index_sv_list):
+    @staticmethod
+    def __decorate_with_sorted_index(one_index_sv_list):
         i = 0
         new_list = []
         for value, index in one_index_sv_list:
@@ -1220,7 +1423,8 @@ class FuzzySort():
             i += 1
         return new_list
 
-    def decorate_to_indexed_sort_value_list(self, sv_list):
+    @staticmethod
+    def __decorate_to_indexed_sort_value_list(sv_list):
         """
         Generates a tuple list from numeric list to decorate item with their original index and index that they
         would have after sorting
@@ -1229,120 +1433,193 @@ class FuzzySort():
         :param sv_list:
         :return:
         """
-        one_index_sv_list = self.decorate_with_original_index(sv_list)  # get one index list
+        one_index_sv_list = self.__decorate_with_original_index(sv_list)  # get one index list
         # sort temporarily to get sorted index
-        temp_list = self.decorate_with_sorted_index(sorted(one_index_sv_list))
+        temp_list = self.__decorate_with_sorted_index(sorted(one_index_sv_list))
         # revert to original order
         return sorted(temp_list, key=lambda x: x[1])
 
-    def remove(self, a_list, value):
+    @staticmethod
+    def __get_sort_value_list(decorated_list):
+        return [x[1] for x in decorated_list]
+
+    def __remove_from_list(self, a_list, value):
         if value not in a_list:
             return
         a_list.remove(value)
-        self.remove(a_list, value) # recurse all instances
-        return
 
-    def insert_to_hi_list(self, indexed_list, value):  # not implemented, not needed now
-        #for i in range(0, len(indexed_list)):
-        #   if value[0] >= value[i]:
-        #       break
-        pass
+    def __list_with_removing_value(self, a_list, value):
+        new_list = list(a_list)
+        return self.__remove_from_list(new_list, value)
 
-    def get_min(self, a_list):
-        found_first = False
-        lowest = 0
+    def __is_unsortable(self, value):
+        return not self.__is_sortable(value)
+
+    def __is_sortable(self, value):
+        if value is None:
+            return False
+        if value == 0 and not self.zero_is_sortable:
+            return False
+        return True
+
+    def __get_min(self, a_list):
+        lowest_index = None
+        lowest_value = None
         lowest_item = None
-
+        if a_list is None:
+            return None
+        i = 0
         for item in a_list:
-            if type(item) is tuple:
-                value = item[0]
-                if item[1] < 0:
-                    value = None
-            else:
-                value = item
-            if self.count_zeros or value != 0 and value is not None:
-                if value < lowest or not found_first:
-                    lowest = value
+            value = self.extract_value(item, 0)
+            if self.__is_sortable(value):
+                if lowest_item is None or value < lowest_value:
+                    lowest_value = value
                     lowest_item = item
-                    found_first = True
+                    lowest_index = i
+            i += 1
         return lowest_item
 
-    def get_max(self, a_list):
-        found_first = False
-        highest = 0
+    def __get_max(self, a_list):
+        highest_index = None
+        highest_value = None
         highest_item = None
-
+        if a_list is None:
+            return None
+        i = 0
         for item in a_list:
-            if type(item) is tuple:
-                value = item[0]
-                if item[1] < 0:
-                    value = None
-            else:
-                value = item
-            if self.count_zeros or value != 0:
-                if value > highest or not found_first:
-                    highest = value
+            value = self.extract_value(item, 0)
+            if self.__is_sortable(value):
+                if highest_item is None or value > highest_value:
+                    highest_value = value
                     highest_item = item
-                    found_first = True
+                    highest_index = i
+            i += 1
         return highest_item
 
-    def stddev(self, a_list):
-        valid_list = self.rip_off_none_values(a_list)
-        avg = self.mean(a_list)
-        temp = []
-        for x in valid_list:
-            temp.append((abs(x - avg)) ** 2)
-        return math.sqrt(self.mean(temp))
-
-    def median(self, a_list):
-        valid_list = sorted(self.rip_off_none_values(a_list))
-        items = len(valid_list)
-        if items % 2 == 0:
-            return (valid_list[items / 2 - 1] + valid_list[items / 2]) / 2.0
+    @staticmethod
+    def extract_value(item, index=None, index2=None, index3=None, index4=None):
+        if index is None:
+            return item
+        if type(item) is int or type(item) is float:
+            return item
+        elif type(item) is tuple or type(item) is list:
+            if index >= len(item):
+                return None
+            else:
+                return FuzzySort.extract_value(item[index], index2, index3, index4)
         else:
-            return valid_list[items / 2]
+            return None
 
-    def count_valid(a_list):
+    def __count_sortable_values(self, a_list):
         c = 0
         for value in a_list:
             if value is not None and (value != 0 or self.count_zeros):
                 c += 1
         return c
 
-    def calc_sum(self, a_list):
+    def __calc_sum(self, a_list):
         s = 0
         for value in a_list:
-            if value is not None and (value != 0 or self.count_zeros):
+            if self.__is_sortable(value):
                 s += value
         return s
 
-    def rip_off_none_values(self, a_list, tuple_index=0):
+    def __remove_unsortables(self, a_list, tuple_index=0):
         l = []
         for item in a_list:
             if type(item) is tuple:
                 value = item[tuple_index]
-                if value is not None and (value != 0 or self.count_zeros):
+                if self.__is_sortable(value):
                     l.append(item)
             else:
                 value = item
-                if value is not None and (value != 0 or self.count_zeros):
+                if self.__is_sortable(value):
                     l.append(item)
         return l
 
-    def mean(self, a_list):
-        return self.calc_sum(a_list, self.count_zeros) / float(self.count_valid(a_list))
+    def __mean(self, a_list):
+        return self.__calc_sum(a_list) / float(self.__count_sortable_values(a_list))
 
-    def unpack(self, a_list, i):
+    def __stddev(self, a_list):
+        valid_list = self.__remove_unsortables(a_list)
+        avg = self.__mean(a_list)
+        temp = []
+        for x in valid_list:
+            temp.append((abs(x - avg)) ** 2)
+        return math.sqrt(self.__mean(temp))
+
+    def __median(self, a_list):
+        valid_list = sorted(self.__remove_unsortables(a_list))
+        items = len(valid_list)
+        if items % 2 == 0:
+            return (valid_list[items / 2 - 1] + valid_list[items / 2]) / 2.0
+        else:
+            return valid_list[items / 2]
+
+    @staticmethod
+    def unpack(a_list, i):
         new_list = []
         for item in a_list:
             new_list.append(item[i])
         return new_list
 
-    def has_none_values(self, sv_list):
+    def has_unsortables(self, sv_list):
         for sv in sv_list:
-            if sv is None:
+            if self.__is_unsortable(value):
                 return True
         return False
+
+    def __debug_print(self, lo_list, hi_list, drop_side):
+        i = 0
+        break_index = len(lo_list)
+        full_list = lo_list + hi_list
+        prev_val = None
+        max_lo = self.__get_max(lo_list)
+        min_hi = self.__get_min(hi_list)
+        print("  ", end="")
+        for item in full_list:
+            if i == break_index:
+                print(Color.NORMAL + "----  " + Color.NORMAL, end="")
+            val = item[0]
+            oi = item[1]
+            si = item[2]
+            sign = 0
+            if prev_val is not None:
+                sign = math.copysign(1, val - prev_val)
+            else:
+                sign = 0
+            cc = Color.NORMAL
+            if item == max_lo or item == min_hi:
+                if (drop_side == DropSide.LOW and item == max_lo) \
+                        or (drop_side == DropSide.HIGH and item == min_hi) \
+                        or drop_side == DropSide.BOTH:
+                    cc = Color.RED
+                elif drop_side != DropSide.NONE:
+                    cc = Color.BLUE
+            if min_hi is not None:
+                if i < break_index and val > min_hi[0]:
+                    cc += Color.BOLD
+            if max_lo is not None:
+                if i >= break_index and val < max_lo[0]:
+                    cc += Color.BOLD
+            print(cc + str(si) + "=" + str(val) + Color.NORMAL, end="  ")
+            prev_val = val
+            i += 1
+        print("")
+
+    def __debug_print_sv_list(self, sv_list):
+        print(Color.NORMAL + "[ ", end="")
+        i = 0
+        for item, val in sv_list:
+            if item == "None":
+                val = Color.BLUE + "None" + Color.NORMAL
+            else:
+                val = str(val)
+            if i < len(sv_list) - 1:
+                print(val, end=", ")
+            else:
+                print(val + " ]" + Color.NORMAL)
+            i += 1
 
 # ===================================================================================================================
 #
