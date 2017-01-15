@@ -28,11 +28,11 @@
 # ------------------------------------------------------------------------
 
 register(EXPORT,
-    id    = 'gedcomoptions',
+    id    = 'gedcom_options',
     name  = _("GEDCOM With Extra Options"),
     name_accell  = _("GEDCOM With Extra Options"),
     description =  _("Expansion to default GedCom export module."),
-    version = '0.5.7',
+    version = '0.5.10',
     gramps_target_version = '4.2',
     status = STABLE,
     fname = 'GedcomOptions.py',

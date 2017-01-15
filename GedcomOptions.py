@@ -46,6 +46,7 @@ Names:
 #
 #------------------------------------------------------------------------
 from __future__ import unicode_literals
+from __future__ import print_function
 
 from gi.repository import Gtk
 
@@ -65,7 +66,7 @@ from gramps.gen.lib.date import Today
 import gramps.plugins.lib.libgedcom as libgedcom
 import math
 
-__version__ = "0.5.7"
+__version__ = "0.5.10"
 
 try:
     _trans = glocale.get_addon_translator(__file__)
@@ -84,6 +85,9 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
     """
     GedcomWriter with Extra Options
     """
+
+    __fuzzy_debug = False
+
     _address_format = ["%street, %custom, %unknown, %building, %department, %farm, %neighborhood",
                        "%hamlet, %village, %borough, %locality",
                        "[%CODE ]+-[%town, %city, %municipality], %parish",
@@ -557,6 +561,7 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
     # Sort Children
     # --------------
 
+    # SORT CHILDREN
     def _family_child_list(self, child_ref_list):
         """
         Override of standard ExportGeccom plugin version
@@ -571,21 +576,34 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
         # Sort children
 
-        child_sort_list = self.decorate_by_birth(child_ref_list)
-
         if self.sort_children:
-            sorter = FuzzySort()
+            child_sort_list = self.decorate_by_birth(child_ref_list)
+            sorter = FuzzySort(unsortables_last=True, max_deviation=20 * 365)
+            quality, trend, unsortables, exceed1, exceed2, eval_fail = sorter.get_info(child_sort_list)
+            need_sorting = True if trend < 1 else False
+            if self.__fuzzy_debug and (need_sorting and unsortables) or exceed1 or exceed2 or need_sorting:
+                #__id = family.get_gramps_id()
+                #print(__id + ": " + self.__get_family_print_name(family))
+                #self.__print_debug_flags(need_sorting, unsortables, exceed1 or exceed2, eval_fail)
+                #print("q: " + str(quality) + ", t: " + str(trend))
+                #print("----------------------------")
+                pass
+
             child_sort_list = sorter.fuzzysorted(child_sort_list)
+            child_ref_list = sorter.unpack(child_sort_list, 0)
 
         # Write to gedcom
-        for (gid, sort_value) in child_sort_list:
-            if gid is None: continue
+        for cref in child_ref_list:
+            gid = self.dbase.get_person_from_handle(cref.ref).get_gramps_id()
+            if gid is None:
+                continue
             self._writeln(1, 'CHIL', '@%s@' % gid)
 
     #---------------
     # Sort Events
     # --------------
 
+    # SORT PERSON EVENTS
     def _remaining_events(self, person):
         """
         Output all events associated with the person that are not BIRTH or
@@ -606,23 +624,52 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
         adop_written = False
 
         event_ref_list = person.get_event_ref_list()
-        event_sort_list = self.decorate_by_date(event_ref_list)
 
         if self.sort_events:
-            sorter = FuzzySort(unsortables_last=False)
-            event_sort_list = sorter.fuzzysorted(event_sort_list)
-            ## finally, sort birth based events first and death based events last
+            birth_sv, death_sv = self.get_birth_and_death_sort_values(person)
+            if birth_sv is not None:
+                birth_sv -= 200  # 200 days earlier, because of date mofifier logic (between and eg.)
+            if death_sv is not None:
+                death_sv += 200  # 200 days later for funerals and such
+            sorter = FuzzySort(unsortables_last=False, max_deviation=50*365)
+
+            ## preliminary sorting, sort birth first and death based event last
+            event_sort_list = self.decorate_by_event_type(event_ref_list)
+            event_sort_list2 = sorted(event_sort_list, key=lambda x: x[1])
+            event_ref_list = sorter.unpack(event_sort_list2, 0)
+
+            event_sort_list = self.decorate_by_date(event_ref_list)
+            quality, trend, unsortables, exceed1, exceed2, eval_fail = sorter.get_info(event_sort_list,
+                                                                            low_value=birth_sv,
+                                                                            high_value=death_sv)
+            # debugging
+            need_sorting = True if trend < 1 else False
+            if self.__fuzzy_debug and (need_sorting and unsortables) or exceed1 or exceed2 or need_sorting:
+                __id = person.get_gramps_id()
+                print(__id + ": " + self.__get_person_print_name(person))
+                self.__print_debug_flags(need_sorting, unsortables, exceed1 or exceed2, eval_fail)
+                print("q: " + str(quality) + ", t: " + str(trend))
+                print("----------------------------")
+
+            # Main sorting
+            event_sort_list = sorter.fuzzysorted(event_sort_list,
+                                                 low_value=birth_sv,
+                                                 high_value=death_sv)
+            event_ref_list = sorter.unpack(event_sort_list, 0)
+
+            ## finally, sort birth first and death based event last again
             event_sort_list = self.decorate_by_event_type(event_ref_list)
             event_sort_list = sorted(event_sort_list, key=lambda x: x[1])
             event_ref_list = sorter.unpack(event_sort_list, 0)
 
-        for (event_ref, sort_value) in event_sort_list:  # person.get_event_ref_list():
+        for event_ref in event_ref_list:
             event = self.dbase.get_event_from_handle(event_ref.ref)
             if not event: continue
             self._process_person_event(person, event, event_ref)
         if not adop_written:
             self._adoption_records(person, adop_written)
 
+    # SORT FAMILY EVENTS
     def _family_events(self, family):
         """
         Output the events associated with the family.
@@ -632,15 +679,17 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
 
         """
         event_ref_list = family.get_event_ref_list()
-        event_sort_list = self.decorate_by_date(event_ref_list)
 
         if self.sort_events:
-            sorter = FuzzySort(unsortables_last=False)
+            sorter = FuzzySort(unsortables_last=False, max_deviation=35)
+            event_sort_list = self.decorate_by_date(event_ref_list)
             event_sort_list = sorter.fuzzysorted(event_sort_list)
+            event_ref_list = sorter.unpack(event_sort_list, 0)
 
-        for (event_ref, sort_value) in event_sort_list:  ## family.get_event_ref_list():
+        for event_ref in event_ref_list:  ## orginally: family.get_event_ref_list():
             event = self.dbase.get_event_from_handle(event_ref.ref)
-            if event is None: continue
+            if event is None:
+                continue
             self._process_family_event(event, event_ref)
             self._dump_event_stats(event, event_ref)
 
@@ -681,21 +730,42 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             event_sort_list.append((event_ref, val))
         return event_sort_list
 
+    def get_birth_and_death_sort_values(self, person):
+        birth_ref = person.get_birth_ref()
+        if birth_ref is not None:
+            birth = self.db.get_event_from_handle(birth_ref.ref)
+            birth_sv = birth.get_date_object().get_sort_value()
+            if birth_sv == 0:
+                birth_sv = None
+        else:
+            birth_sv = None
+
+        death_ref = person.get_death_ref()
+        if death_ref is not None:
+            death = self.db.get_event_from_handle(death_ref.ref)
+            death_sv = death.get_date_object().get_sort_value()
+            if death_sv == 0:
+                death_sv = None
+        else:
+            death_sv = None
+        return birth_sv, death_sv
+
     def get_event_type_sort_modifier(self, event_ref):
         event = self.db.get_event_from_handle(event_ref.ref)
         event_type = event.get_type()
         val = 0
         if event_type == EventType.BIRTH:
-            val = -3000 # must be less than fuzzysorter's very_low_number
+            val = -1
         if event_type == EventType.DEATH:
-            val = 3000 # must be more than fuzzysorter's very_high_number
+            val = 1
         if event_type == EventType.CAUSE_DEATH:
-            val = 3001
+            val = 2
         if event_type == EventType.CREMATION:
-            val = 3002
-        if event_type == EventType.PROBATE:
-            val = 3003
+            val = 3
+        if event_type == EventType.BURIAL:
+            val = 4
         return val
+
 
     def has_individuals_without_birthdate(self, a_list):
         for cref in a_list:
@@ -703,6 +773,40 @@ class GedcomWriterWithOptions(exportgedcom.GedcomWriter):
             if birth_ref is None:
                     return True
         return False
+
+    def __get_person_print_name(self, person):
+        name = person.get_primary_name()
+        firstname = name.get_first_name().strip()
+        surname = name.get_surname().replace('/', ' ')
+        pname = '%s %s' % (firstname, surname)
+        return pname
+
+    def __get_family_print_name(self, family):
+        father_handle = family.get_father_handle()
+        mother_handle = family.get_mother_handle()
+
+        if father_handle is not None:
+            father = self.db.get_person_from_handle(father_handle)
+            fstr = self.__get_person_print_name(father)
+        else:
+            fstr = "   "
+        if mother_handle is not None:
+            mother = self.db.get_person_from_handle(mother_handle)
+            mstr = self.__get_person_print_name(mother)
+        else:
+            mstr = "  "
+        return fstr + " / " + mstr
+
+    def __print_debug_flags(self, need_sorting, unsortables, exceed, evaluate_fail):
+        if need_sorting is True:
+            print("Sorting needed  ", end="")
+        if unsortables is True:
+            print("Unsortables  ", end="")
+        if exceed is True:
+            print("Erroneous values  ", end="")
+        if need_sorting and unsortables and evaluate_fail:
+            print("Unsortable evaluation failed  ", end="")
+        print("")
 
 
 #-------------------------------------------------------------------------
@@ -752,25 +856,27 @@ class GedcomWriterOptionBox(WriterOptionBox):
         self.sort_events_check = \
             Gtk.CheckButton(_("Smart sort events"))
         self.reversed_places_check = \
-            Gtk.CheckButton(_("Reverse order place components"))
-        self.export_only_useful_pe_addresses_check = \
-            Gtk.CheckButton(_("Omit addresses that have no extra info in addition to place title"))
-        self.extended_pe_addresses_check = \
-            Gtk.CheckButton(_("Include additional place data in addresses"))
+            Gtk.CheckButton(_("Reverse place names"))
+        #self.reversed_places_check.set_help(_("Use reverse order in place titles"))
         self.avoid_repetition_in_places_check = \
-            Gtk.CheckButton(_("Try to avoid repetition in place names"))
+            Gtk.CheckButton(_("Avoid repetition in place names"))
+        self.extended_pe_addresses_check = \
+            Gtk.CheckButton(_("Extended addresses"))
+        self.export_only_useful_pe_addresses_check = \
+            Gtk.CheckButton(_("Omit addresses without info in addition to place name"))
         self.omit_borough_from_address_check = \
-            Gtk.CheckButton(_("Omit neighborhood from addresses that have street and city (experimental)"))
+            Gtk.CheckButton(_("Omit neighborhood from addresses"))
         self.get_coordinates_check = \
-            Gtk.CheckButton(_("Inherit missing coordinates from place tree"))
+            Gtk.CheckButton(_("Inherit missing coordinates from higher in place hierarchy"))
         self.include_tng_place_levels_check = \
-            Gtk.CheckButton(_("Include TNG specific place level tags 'PLEV' and 'ZOOM'"))
+            Gtk.CheckButton(_("Include TNG specific place tags"))
         self.move_patronymics_check = \
-            Gtk.CheckButton(_("Move matro-/patronymic surnames to forename"))
+            Gtk.CheckButton(_("Matro- and patronymics as part of first names"))
+        #self.move_patronymics_check.set_help(_("Moves matro-/patronymics from surnames to the end of first names"))
 
         # Set defaults:
         self.sort_children_check.set_active(1)
-        self.sort_events_check.set_active(0)
+        self.sort_events_check.set_active(1)
         self.reversed_places_check.set_active(1)
         self.get_coordinates_check.set_active(1)
         self.export_only_useful_pe_addresses_check.set_active(1)
@@ -877,7 +983,7 @@ class Color:
 
 class FuzzySort():
     # Uses internally this type of temporary tuple decorated lists:
-    # decorated_list: (object, sort value)  INPUT LIST!
+    # decorated_list: (object, sort value)  INPUT TYPE!
     # sv_list: ('nullable' sort value)
     # valid_sv_list (sort value)
     # one_index_sv_list (sort value, original index)
@@ -886,61 +992,90 @@ class FuzzySort():
     # trend: -1 to 1 depending if the list is descending or ascending. fractional if there are oddities (needs sorting)
     # quality 0 to 1 measures how well the list is in order
 
-    # TODO:
-    # Quality tresholds are not used at all atm
-    __version__ = "0.5"
+    __version__ = "0.5.10"
 
     order_quality_treshold = 0.4
-    trend_treshold = 0.2
-    very_low_number = -1000000000000000
-    very_high_number = 1000000000000000
+    trend_treshold = 0.1
+    low_value = -1000000000000000
+    high_value = 1000000000000000
     descending_order_accepted = False  # not properly implemented
     zero_is_sortable = True
     unsortables_last = True
     debug = False
-    evaluation_quality_treshold = 0.7
+    evaluation_quality_treshold = 0.6
+    max_deviation = 10000000000000
 
     def __init__(self, order_quality_treshold=0.4,
-                 trend_treshold= 0.2,
+                 trend_treshold= 0.1,
                  descending_accepted=False,
                  zero_is_sortable=True,
                  unsortables_last=True,
-                 low_value =-1000000000000000,
+                 low_value=-1000000000000000,
                  high_value=1000000000000000,
                  debug=False,
-                 evaluation_quality_treshold=0.7
+                 evaluation_quality_treshold=0.6,
+                 max_deviation = 10000000000000
                  ):
         self.order_quality_treshold = order_quality_treshold
         self.trend_treshold = trend_treshold
         self.descending_order_accepted = descending_accepted
         self.zero_is_sortable = zero_is_sortable
         self.unsortables_last = unsortables_last
-        self.very_low_number = low_value
-        self.very_high_number = high_value
+        self.low_value = low_value
+        self.high_value = high_value
         self.debug = debug
         self.evaluation_quality_treshold = evaluation_quality_treshold
+        self.max_deviation = max_deviation
 
-    def fuzzysort(self, decorated_list):
-        decorated_list = self.fuzzysorted(decorated_list)
+    def fuzzysort(self, decorated_list, max_deviation=None, low_value=None, high_value=None):
+        decorated_list = self.fuzzysorted(decorated_list, max_deviation, low_value, high_value)
 
-    def fuzzysorted(self, decorated_list):
+    def fuzzysorted(self, decorated_list, max_deviation=None, low_value=None, high_value=None):
         sv_list = self.__get_sort_value_list(decorated_list)
-        trend = self.__order_trend(sv_list)
+
+        if high_value is None:
+            high_value = self.high_value
+        if low_value is None:
+            low_value = self.low_value
+        if max_deviation is None:
+            max_deviation = self.max_deviation
 
         if len(decorated_list) == 0:
             return decorated_list
 
         # evaluate missing sort values and sort
-        evaluated_list = self.__evaluate_missing_sort_values(decorated_list)
+        evaluated_list = self.__evaluate_missing_sort_values(decorated_list, max_deviation, low_value, high_value)
         sorted_list = sorted(evaluated_list, key=lambda x: x[1])
         if self.debug:
             print("Sorted list: ", end="")
             self.__debug_print_sv_list(sorted_list)
         return sorted_list
 
-    def __evaluate_missing_sort_values(self, decorated_list):
+    def get_info(self, decorated_list, max_deviation=None, low_value=None, high_value=None):
+        if high_value is None:
+            high_value = self.high_value
+        if low_value is None:
+            low_value = self.low_value
+        if max_deviation is None:
+            max_deviation = self.max_deviation
+
+        sv_list = self.__get_sort_value_list(decorated_list)
+        trend = self.__order_trend(sv_list)
+        quality = self.__order_quality(sv_list)
+
+        max_dev_exceeds = self.has_values_exceeding_max_deviation(sv_list, max_deviation=max_deviation)
+        hi_lo_values_exceed = self.has_values_out_of_range(sv_list, low_value=low_value, high_value=high_value)
+        has_unsortables = self.has_unsortables(sv_list)
+        below_treshold = True if quality < self.evaluation_quality_treshold or trend < self.trend_treshold else False
+
+        return trend, quality, has_unsortables, max_dev_exceeds, hi_lo_values_exceed, below_treshold
+
+    def __evaluate_missing_sort_values(self, decorated_list,
+                                       max_deviation=None,
+                                       low_value=None,
+                                       high_value=None):
         new_list = list(decorated_list)
-        unsortables_base_value = self.very_high_number if self.unsortables_last else self.very_low_number
+        unsortables_base_value = self.high_value if self.unsortables_last else self.low_value
 
         # extract sort value list from tuple list, could use also self.unpack(decorated_list, 1)
         sv_list = self.__get_sort_value_list(decorated_list)
@@ -954,6 +1089,8 @@ class FuzzySort():
             print("Trend: " + str(round(trend,4)))
             print("Quality: " + str(round(quality,4)))
 
+        #decorated_list, error_list = self.extract_erroneous_values(decorated_list, max_deviation, low_value, high_value)
+
         evaluation_failed = False
         if quality >= self.order_quality_treshold and trend >= self.trend_treshold:
             i = 0
@@ -961,7 +1098,8 @@ class FuzzySort():
                 value = item[0]
                 sort_value = item[1]
                 if self.__is_unsortable(sort_value):
-                    sort_value, evaluation_quality = self.__evaluate_sort_value(sv_list, i, trend)
+                    sort_value, evaluation_quality = \
+                        self.__evaluate_sort_value(sv_list, i, trend, max_deviation, low_value, high_value)
                     if evaluation_quality < self.evaluation_quality_treshold:
                         evaluation_failed = True
                     new_list[i] = (value, sort_value)
@@ -980,23 +1118,26 @@ class FuzzySort():
 
         return new_list
 
-    def __evaluate_sort_value(self, sv_list, break_index, trend):
+    def __evaluate_sort_value(self, sv_list, break_index, trend,
+                              max_deviation=None,
+                              low_value=None,
+                              high_value=None):
         """
         evaluates sort value for items that are not sortable
 
         :param sv_list: a partial list that comes before the index value
         :param list2: a partial list that comes after the index value
-        :param count_zeros: consider zeros as legal values, not non-sortables
+        :param zero_is_sortable: consider zeros as legal values, not non-sortables
         :return: sort value or None if unable to evaluate
         """
         valid1 = list(self.__remove_unsortables(sv_list[:break_index]))
         valid2 = list(self.__remove_unsortables(sv_list[break_index+1:]))
-        full_valid = valid1 + valid2
         target = (None, break_index, None)
 
         # INDEXED LIST FORMED HERE
         indexed_list = self.__generate_indexed_sort_value_list(valid1 + valid2)
-        # increment all indexes above break index (virtually inserting unsortable between lists)
+
+        # increment all indexes above break index by one (virtually inserting unsortable between lists)
         i = 0
         for sv, i1, i2 in indexed_list:
             if i2 >= break_index:
@@ -1005,7 +1146,10 @@ class FuzzySort():
                 i1 += 1
             indexed_list[i] = (sv, i1, i2)
             i += 1
-        last_index = i
+        last_index = i  # need to be sent to dropping algorithm
+
+        indexed_list, break_index = self.__drop_values_exceeding_max_deviation(indexed_list, max_deviation, tuple_index=0, break_index=break_index)
+        indexed_list, break_index = self.__drop_values_out_of_range(indexed_list, low_value, high_value, tuple_index=0, break_index=break_index)
 
         indexed_list_1 = indexed_list[:break_index]
         indexed_list_2 = indexed_list[break_index:]
@@ -1017,20 +1161,26 @@ class FuzzySort():
             lower_indexed_list = list(indexed_list_2)
             higher_indexed_list = list(indexed_list_1)
 
-        #kokolista = lower_indexed_list + [target]+ higher_indexed_list
-        #print(kokolista)
-
-        # __remove_from_list irrelevant values from lists. values that should belong to the other list are considered
-        # irrelevant
+        kokolista = lower_indexed_list + [target] + higher_indexed_list
         if self.debug:
+            print(kokolista)
             print("Evaluating at index: " + str(break_index))
+
+
+        if self.debug:
+            kokolista = lower_indexed_list + [target] + higher_indexed_list
+            print("Lowest: ", self.__get_min_tuple(kokolista, 0))
+            print("Highest: ", self.__get_max_tuple(kokolista, 0))
+            print(kokolista)
+
+        # THE FUZZY THING starts here
         evaluation_quality = self.__drop_irrelevant_values(lower_indexed_list,
                                                            higher_indexed_list,
                                                            target,
                                                            last_index)
 
-        max_lo = self.__get_max(lower_indexed_list)  # index tuple (sv, original, sorted), index
-        min_hi = self.__get_min(higher_indexed_list) # index tuple (sv, original, sorted), index
+        max_lo = self.__get_max_tuple(lower_indexed_list)  # index tuple (sv, original, sorted), index
+        min_hi = self.__get_min_tuple(higher_indexed_list) # index tuple (sv, original, sorted), index
         if max_lo is None:
             if min_hi is None:
                 evaluated_sort_value = None
@@ -1068,6 +1218,7 @@ class FuzzySort():
 
         #return (self.remove_first_decoration(temp_list))
 
+
     ####### DROPPING #######
     def __drop_irrelevant_values(self, lower_index_list,
                                  higher_index_list,
@@ -1077,11 +1228,12 @@ class FuzzySort():
                                  moved_to_lo=None,
                                  moved_to_hi=None):
         """
-        Checks if two lists have values that would rather belong to the other list,
+        FUZZY ALGORITHM! Checks if two lists have values that would rather belong to the other list,
+        and drops values one by one
 
         :param lower_index_list:
         :param higher_index_list:
-        :param count_zeros:
+        :param zero_is_sortable:
         :return:
         """
 
@@ -1093,80 +1245,92 @@ class FuzzySort():
         if not higher_index_list or not lower_index_list:
             return recursing_quality
 
-        _straight_thru = 0.97
-        _vote_low = 0.93
+        #
+        _criteria_limit_for_straight_selection = 0.97  # criteries with values of this and above are alone determining criterias
+        _criteria_low_limit_for_voting = 0.93  # values between this and _criteria_limit_for_straight_selection goes into voting system
 
-        max_lo = self.__get_max(lower_index_list)  # index tuple (sv, original, sorted)
-        min_hi = self.__get_min(higher_index_list)  # index tuple (sv, original, sorted)
+        max_lo = self.__get_max_tuple(lower_index_list)  # index tuple (sv, original, sorted)
+        min_hi = self.__get_min_tuple(higher_index_list)  # index tuple (sv, original, sorted)
 
         if min_hi[0] < max_lo[0]:  # values in both lists overlap -> dropping needed
             # determine which list is better candidate for dropping most irrelevant value
             drop_criterias = []
-            drop_side = None
+            chosen_drop_side = None
             list_len = len(lower_index_list) + len(higher_index_list)
 
-            # Criteria: Find second 'best' values
+            # Criterias: Good Neigbours
+            # Find second 'best' values, may or may not be droppables
             temp_list = list(lower_index_list)
             temp_list.remove(max_lo)
-            scnd_max_lo = self.__get_max(temp_list)
+            scnd_max_lo = self.__get_max_tuple(temp_list)
             temp_list = list(higher_index_list)
             temp_list.remove(min_hi)
-            scnd_min_hi = self.__get_min(temp_list)
+            scnd_min_hi = self.__get_min_tuple(temp_list)
             target_index = target[1]
 
-            is_scnd_lo_neighbour = False
-            is_scnd_lo_droppable = False
+
             if scnd_max_lo is not None:
                 is_scnd_lo_neighbour = scnd_max_lo[1] + 1 == target_index
                 is_scnd_lo_droppable = scnd_max_lo[0] < min_hi[0]
-            is_scnd_hi_neighbour = False
-            is_scnd_hi_droppable = False
+            else:
+                is_scnd_lo_neighbour = False
+                is_scnd_lo_droppable = False
+
             if scnd_min_hi is not None:
                 is_scnd_hi_neighbour = scnd_min_hi[1] - 1 == target_index
                 is_scnd_hi_droppable = max_lo[0] > scnd_min_hi[0]
-            is_max_lo_lonely_neighbour = max_lo[1] + 1 == target_index and max_lo[1] == 0
-            is_min_hi_lonely_neighbour = min_hi[1] - 1 == target_index and min_hi[1] == last_index
+            else:
+                is_scnd_hi_neighbour = False
+                is_scnd_hi_droppable = False
+
 
             if is_scnd_lo_neighbour and not is_scnd_hi_neighbour:
                 drop_criterias.append((DropCriteria.GOOD_NEIGHBOUR, DropSide.LOW, 0.97))
             if is_scnd_hi_neighbour and not is_scnd_lo_neighbour:
                 drop_criterias.append((DropCriteria.GOOD_NEIGHBOUR, DropSide.HIGH, 0.97))
-            if is_scnd_lo_neighbour and not is_scnd_lo_droppable and (not is_scnd_hi_neighbour or is_scnd_hi_droppable) and scnd_min_hi is not None:
+
+            if is_scnd_lo_neighbour and not is_scnd_lo_droppable \
+                    and (not is_scnd_hi_neighbour or is_scnd_hi_droppable) and scnd_min_hi is not None:
                 drop_criterias.append((DropCriteria.VERY_GOOD_NEIGHBOUR, DropSide.LOW, 0.99))
-            if is_scnd_hi_neighbour and not is_scnd_lo_droppable and (not is_scnd_lo_neighbour or is_scnd_lo_droppable) and scnd_max_lo is not None:
+            if is_scnd_hi_neighbour and not is_scnd_lo_droppable \
+                    and (not is_scnd_lo_neighbour or is_scnd_lo_droppable) and scnd_max_lo is not None:
                 drop_criterias.append((DropCriteria.VERY_GOOD_NEIGHBOUR, DropSide.HIGH, 0.99))
+
+            # criteria: lonely neighbour (max or min is next to target) is not used currently
+            is_max_lo_lonely_neighbour = max_lo[1] + 1 == target_index and max_lo[1] == 0
+            is_min_hi_lonely_neighbour = min_hi[1] - 1 == target_index and min_hi[1] == last_index
+
             if is_max_lo_lonely_neighbour and not is_min_hi_lonely_neighbour:
                 pass # drop_criterias.append((DropCriteria.LONELY_NEIGHBOUR, DropSide.HIGH, 0.92))
             if is_min_hi_lonely_neighbour and not is_max_lo_lonely_neighbour:
                 pass # drop_criterias.append((DropCriteria.LONELY_NEIGHBOUR, DropSide.HIGH, 0.92)) ## note the same choice
 
             # criteria:
-            count_of_droppables_lo_list = self.__calc_items_on_wrong_side_lo(lower_index_list, min_hi)
-            count_of_droppables_hi_list = self.__calc_items_on_wrong_side_hi(higher_index_list, max_lo)
+            droppables_lo = self.__count_droppables_low_side(lower_index_list, min_hi)
+            droppables_hi = self.__count_droppables_high_side(higher_index_list, max_lo)
             ##
-            if count_of_droppables_hi_list > count_of_droppables_lo_list:
+            if droppables_hi > droppables_lo:
                 drop_criterias.append((DropCriteria.DROPPABLES, DropSide.LOW, 0.96))
-            if count_of_droppables_hi_list < count_of_droppables_lo_list:
+            if droppables_hi < droppables_lo:
                 drop_criterias.append((DropCriteria.DROPPABLES, DropSide.HIGH, 0.96))
 
             # 2 criterias: order quality and trend after dropping
-            trend_dropping_max_lo, quality_dropping_max_lo = \
-                self.__test_trend_quality_by_dropping(lower_index_list, higher_index_list, max_lo)
-            trend_dropping_min_hi, quality_dropping_min_hi = \
-                self.__test_trend_quality_by_dropping(lower_index_list, higher_index_list, min_hi)
+            trend_if_max_lo, quality_if_max_lo = \
+                self.__test_trend_and_quality_by_dropping(lower_index_list, higher_index_list, max_lo)
+            trend_if_min_hi, quality_if_min_hi = \
+                self.__test_trend_and_quality_by_dropping(lower_index_list, higher_index_list, min_hi)
             if (self.descending_order_accepted):
-                trend_dropping_max_lo = abs(trend_droppping_max_lo)
-                trend_dropping_min_hi = abs(trend_droppping_min_hi)
-
+                trend_if_max_lo = abs(trend_droppping_max_lo)
+                trend_if_min_hi = abs(trend_droppping_min_hi)
             ##
-            if quality_dropping_max_lo > quality_dropping_min_hi:
+            if quality_if_max_lo > quality_if_min_hi:
                 drop_criterias.append((DropCriteria.SORT_QUALITY, DropSide.LOW, 0.95))
-            if quality_dropping_max_lo < quality_dropping_min_hi:
+            if quality_if_max_lo < quality_if_min_hi:
                 drop_criterias.append((DropCriteria.SORT_QUALITY, DropSide.HIGH, 0.95))
 
-            if trend_dropping_max_lo > trend_dropping_min_hi:
+            if trend_if_max_lo > trend_if_min_hi:
                 pass  # drop_criterias.append((DropCriteria.TREND, DropSide.LOW, 0.83))
-            if trend_dropping_max_lo < trend_dropping_min_hi:
+            if trend_if_max_lo < trend_if_min_hi:
                 pass  # drop_criterias.append((DropCriteria.TREND, DropSide.HIGH, 0.83))
 
             # 3rd criteria: distance between sorted and original indexes, bigger is worse -> drop from there
@@ -1177,7 +1341,6 @@ class FuzzySort():
                 drop_criterias.append((DropCriteria.DISPLACEMENT, DropSide.LOW, 0.94))
             if delta_index_lo < delta_index_hi:
                 drop_criterias.append((DropCriteria.DISPLACEMENT, DropSide.HIGH, 0.94))
-
 
             #  criteria: distance to index of item to be evaluated, bigger is worse -> drop from there
             target_index = len(lower_index_list)
@@ -1207,69 +1370,67 @@ class FuzzySort():
             # sort to get best criterias first
             drop_criterias = sorted(drop_criterias, key=lambda x: x[2], reverse=True)
 
-            drop_side = drop_criterias[0][1]  # the result of first matching criteria
-            drop_reason = drop_criterias[0][0]
+            chosen_drop_side = drop_criterias[0][1]  # the result of first matching criteria
+            chosen_drop_reason = drop_criterias[0][0]
             quality = drop_criterias[0][2]
 
             disagrees = 0
             agrees = 0
 
-            if drop_reason != DropCriteria.UNDETERMINED:
+            if chosen_drop_reason != DropCriteria.UNDETERMINED:
 
                 # VOTING
                 votes_lo = 0
                 votes_hi = 0
                 vote_count = 0
                 for criteria in drop_criterias:
-                    if criteria[2] > _straight_thru:
-                        drop_side = drop_criterias[0][1]  # the result of first matching criteria
-                        drop_reason = drop_criterias[0][0]
+                    if criteria[2] > _criteria_limit_for_straight_selection:
+                        chosen_drop_side = drop_criterias[0][1]  # the result of first matching criteria
+                        chosen_drop_reason = drop_criterias[0][0]
                         break
-                    if _vote_low <= criteria[2] <= _straight_thru:
+                    if _criteria_low_limit_for_voting <= criteria[2] <= _criteria_limit_for_straight_selection:
                         if criteria[1] == DropSide.LOW:
                             votes_lo += criteria[2]
                         else:
                             votes_hi += criteria[2]
                         vote_count += 1
-                    if votes_hi == 0 and votes_lo == 0 and criteria[2] < _vote_low:
-                        drop_reason = criteria[0]
-                        drop_side = criteria[1]
+                    if votes_hi == 0 and votes_lo == 0 and criteria[2] < _criteria_low_limit_for_voting:
+                        chosen_drop_reason = criteria[0]
+                        chosen_drop_side = criteria[1]
 
                 if votes_hi + votes_lo > 0:
-                    drop_side = DropSide.LOW if votes_lo > votes_hi else DropSide.HIGH
-                    drop_reason = DropCriteria.VOTE
+                    chosen_drop_side = DropSide.LOW if votes_lo > votes_hi else DropSide.HIGH
+                    chosen_drop_reason = DropCriteria.VOTE
                     quality = (votes_hi + votes_lo) / vote_count
 
-                # DISAGREE CALC
+                # Penalty from disagreeing results (only for criterias used in voting)
                 for criteria in drop_criterias:
-                    if criteria[2] >= _vote_low:
-                        if criteria[1] == drop_side:
+                    if criteria[2] >= _criteria_low_limit_for_voting:
+                        if criteria[1] == chosen_drop_side:
                             agrees += criteria[2]
                         else:
                             disagrees += criteria[2]
+                disagreement_factor = 1 - disagrees / (agrees + disagrees) / 10
 
-                agreement_factor = 1 - disagrees / (agrees + disagrees) / 10
+                quality = quality * disagreement_factor
 
-                quality = quality * agreement_factor
-
-            recursing_quality = quality * recursing_quality
+            recursing_quality = quality * recursing_quality  # add quality of this evaluating round to the one be to collect all
 
             if self.debug:
-                self.__debug_print(lower_index_list, higher_index_list, drop_side)
+                self.__debug_print(lower_index_list, higher_index_list, chosen_drop_side)
 
-            # actual dropping
-
-            if drop_side == DropSide.LOW or drop_side == DropSide.BOTH:
-                self.__remove_from_list(lower_index_list, max_lo)  # Drops
+            # Finally actually drop value from either list
+            if chosen_drop_side == DropSide.LOW or chosen_drop_side == DropSide.BOTH:
+                self.__remove_from_list(lower_index_list, max_lo)
                 moved_to_hi.append(max_lo)
-            if drop_side == DropSide.HIGH or drop_side == DropSide.BOTH:
-                self.__remove_from_list(higher_index_list, min_hi)  # DROPS
+            if chosen_drop_side == DropSide.HIGH or chosen_drop_side == DropSide.BOTH:
+                self.__remove_from_list(higher_index_list, min_hi)
                 moved_to_lo.append(min_hi)
 
             if self.debug:
                 self.__debug_print(lower_index_list, higher_index_list, DropSide.NONE)
-                side = "HIGH" if drop_side == DropSide.HIGH else "LOW"
-                print("  Evaluation based on: " + drop_reason + "->" + side + " /// ", end="")
+                side = "HIGH" if chosen_drop_side == DropSide.HIGH else "LOW"
+                print("  Evaluation based on: " + chosen_drop_reason + "->" + side + " /// ", end="")
                 i = 0
                 for item in drop_criterias:
                     if i == 0 and item[2] >= 0.95:
@@ -1278,11 +1439,11 @@ class FuzzySort():
                     print("" + item[0] + "->" + side + "  ", end="")
                     i += 1
                 sv_list = self.unpack(lower_index_list + higher_index_list, 0)
-                ttrend = self.__order_trend(sv_list)
-                tquality = self.__order_quality(sv_list)
-                print(" Q:" + str(round(tquality, 4)) + "  T: " + str(round(ttrend, 4)))
+                test_trend = self.__order_trend(sv_list)
+                test_quality = self.__order_quality(sv_list)
+                print(" Q:" + str(round(test_quality, 4)) + "  T: " + str(round(test_trend, 4)))
 
-            if drop_side != None and drop_side != DropSide.NONE:
+            if chosen_drop_side != None and chosen_drop_side != DropSide.NONE:
                 recursing_quality = self.__drop_irrelevant_values(lower_index_list,
                                                                   higher_index_list,
                                                                   target,
@@ -1293,21 +1454,16 @@ class FuzzySort():
                 return recursing_quality
 
         # list is in order or no point of removing anything
-
-        if self.debug:
-            self.__debug_print(moved_to_lo + lower_index_list, higher_index_list + moved_to_hi, DropSide.NONE)
-            self.__debug_print(sorted(moved_to_lo + lower_index_list), sorted(higher_index_list + moved_to_hi), DropSide.NONE)
-
         return recursing_quality
 
-    def __calc_items_on_wrong_side_lo(self, lower_index_list, min_hi):
+    def __count_droppables_low_side(self, lower_index_list, min_hi):
         count = 0
         for item in lower_index_list:
             if item[0] > min_hi[0]:
                 count += 1
         return count
 
-    def __calc_items_on_wrong_side_hi(self, higher_index_list, max_lo):
+    def __count_droppables_high_side(self, higher_index_list, max_lo):
         count = 0
         for item in higher_index_list:
             if item[0] < max_lo[0]:
@@ -1343,10 +1499,6 @@ class FuzzySort():
         # are all values the same? this means the list is perfectly ordered, thus returning 1
         if plus == 0 and minus == 0 and equals > 0:
             return 1
-
-        # equal amount of increments and decrements, completely unsorted list
-        # if plus == minus:
-        #    return 0
 
         # calculate fractional value how much there are steps going in to right direction - which is
         # negative when descending
@@ -1392,7 +1544,7 @@ class FuzzySort():
         quality = 1 - error_count / (12 + list_len * 0.75)
         return quality
 
-    def __test_trend_quality_by_dropping(self, lower_index_list, higher_index_list, drop_item):
+    def __test_trend_and_quality_by_dropping(self, lower_index_list, higher_index_list, drop_item):
         test_list = lower_index_list + higher_index_list
         self.__remove_from_list(test_list, drop_item)
         sv_list = self.unpack(test_list, 0)
@@ -1445,24 +1597,31 @@ class FuzzySort():
 
     def __remove_from_list(self, a_list, value):
         if value not in a_list:
-            return
-        a_list.remove(value)
+            return None
+        i = 0
+        for item in a_list:
+            if item == value:
+                a_list.remove(value)
+                return i
+            i += 1
+        return None
 
     def __list_with_removing_value(self, a_list, value):
         new_list = list(a_list)
         return self.__remove_from_list(new_list, value)
 
-    def __is_unsortable(self, value):
-        return not self.__is_sortable(value)
+    def __is_unsortable(self, value, tuple_index=0):
+        return not self.__is_sortable(value, tuple_index)
 
-    def __is_sortable(self, value):
+    def __is_sortable(self, value, tuple_index=0):
+        value = self.extract_value(value, tuple_index)
         if value is None:
             return False
         if value == 0 and not self.zero_is_sortable:
             return False
         return True
 
-    def __get_min(self, a_list):
+    def __get_min_tuple(self, a_list, tuple_index=0):
         lowest_index = None
         lowest_value = None
         lowest_item = None
@@ -1470,7 +1629,7 @@ class FuzzySort():
             return None
         i = 0
         for item in a_list:
-            value = self.extract_value(item, 0)
+            value = self.extract_value(item, tuple_index)
             if self.__is_sortable(value):
                 if lowest_item is None or value < lowest_value:
                     lowest_value = value
@@ -1479,7 +1638,7 @@ class FuzzySort():
             i += 1
         return lowest_item
 
-    def __get_max(self, a_list):
+    def __get_max_tuple(self, a_list, tuple_index=0):
         highest_index = None
         highest_value = None
         highest_item = None
@@ -1487,7 +1646,7 @@ class FuzzySort():
             return None
         i = 0
         for item in a_list:
-            value = self.extract_value(item, 0)
+            value = self.extract_value(item, tuple_index)
             if self.__is_sortable(value):
                 if highest_item is None or value > highest_value:
                     highest_value = value
@@ -1510,16 +1669,18 @@ class FuzzySort():
         else:
             return None
 
-    def __count_sortable_values(self, a_list):
+    def __count_sortable_values(self, a_list, tuple_index=0):
         c = 0
-        for value in a_list:
-            if value is not None and (value != 0 or self.count_zeros):
+        for item in a_list:
+            value = self.extract_value(item, tuple_index)
+            if value is not None and (value != 0 or self.zero_is_sortable):
                 c += 1
         return c
 
-    def __calc_sum(self, a_list):
+    def __calc_sum(self, a_list, tuple_index=0):
         s = 0
-        for value in a_list:
+        for item in a_list:
+            value = self.extract_value(item, tuple_index)
             if self.__is_sortable(value):
                 s += value
         return s
@@ -1527,34 +1688,156 @@ class FuzzySort():
     def __remove_unsortables(self, a_list, tuple_index=0):
         l = []
         for item in a_list:
-            if type(item) is tuple:
-                value = item[tuple_index]
-                if self.__is_sortable(value):
-                    l.append(item)
-            else:
-                value = item
-                if self.__is_sortable(value):
-                    l.append(item)
+            value = self.extract_value(item, tuple_index)
+            if self.__is_sortable(value):
+                l.append(item)
         return l
 
-    def __mean(self, a_list):
-        return self.__calc_sum(a_list) / float(self.__count_sortable_values(a_list))
+    def __drop_values_exceeding_max_deviation(self, a_list, max_deviation, tuple_index=0, break_index=0):
+        if max_deviation is None:
+            max_deviation = self.max_deviation
+        max = self.__get_max_tuple(a_list, tuple_index)
+        min = self.__get_min_tuple(a_list, tuple_index)
+        max_value = self.extract_value(max, tuple_index)
+        min_value = self.extract_value(min, tuple_index)
+        if max is None or min is None:
+            return a_list, break_index
+        range = self.extract_value(max, tuple_index) - self.extract_value(min, tuple_index)
+        if range <= max_deviation * 2:
+            return a_list, break_index
+        else:
+            midpoint = self.__mid_between_min_max(a_list, tuple_index)
+            if midpoint - min_value > max_value - midpoint:
+                item_to_be_removed = min
+            else:
+                item_to_be_removed = max
+            remove_index = self.__remove_from_list(a_list, item_to_be_removed)
+            if remove_index is not None:
+                if remove_index < break_index:
+                    break_index -= 1
+        a_list, break_index = self.__drop_values_exceeding_max_deviation(a_list, max_deviation, tuple_index, break_index)
+        return a_list, break_index
 
-    def __stddev(self, a_list):
-        valid_list = self.__remove_unsortables(a_list)
-        avg = self.__mean(a_list)
+    def has_values_exceeding_max_deviation(self, a_list, max_deviation, tuple_index=0):
+        if max_deviation is None:
+            max_deviation = self.max_deviation
+        max = self.__get_max_tuple(a_list, tuple_index)
+        min = self.__get_min_tuple(a_list, tuple_index)
+        if max is None or min is None:
+            return False
+        range = self.extract_value(max, tuple_index) - self.extract_value(min, tuple_index)
+        if range <= max_deviation * 2:
+            return False
+        else:
+            return True
+
+    def __drop_values_out_of_range(self, a_list, low_value=None, high_value=None, tuple_index=0, break_index=0):
+        temp_list = []
+        i = 0
+        for item in a_list:
+            value = self.extract_value(item, tuple_index)
+            if value is not None and low_value is not None:
+                if value >= low_value:
+                    temp_list.append(item)
+                else:
+                    # dropped out
+                    if i < break_index:
+                        break_index -= 1
+            else:
+                temp_list.append(item)
+            i += 1
+        i = 0
+        new_list = []
+        for item in temp_list:
+            value = self.extract_value(item, tuple_index)
+            if value is not None and high_value is not None:
+                if value <= high_value:
+                    new_list.append(item)
+                else:
+                    # dropped out
+                    if i < break_index:
+                        break_index -= 1
+            else:
+                new_list.append(item)
+            i += 1
+        return new_list, break_index
+
+    def has_values_out_of_range(self, a_list, low_value=None, high_value=None, tuple_index=0):
+        for item in a_list:
+            value = self.extract_value(item, tuple_index)
+            if value is not None and low_value is not None:
+                if value < low_value:
+                    return True
+            if value is not None and high_value is not None:
+                if value > high_value:
+                    return True
+        return False
+
+    def __mean(self, a_list, tuple_index=0):
+        count = self.__count_sortable_values(a_list, tuple_index)
+        if count > 0:
+            return self.__calc_sum(a_list, tuple_index) / count
+        else:
+            return None
+
+    def __stddev(self, a_list, tuple_index=0):
+        valid_list = self.__remove_unsortables(a_list, tuple_index)
+        if len(a_list) == 0:
+            return None
+        avg = self.__mean(a_list, tuple_index)
         temp = []
         for x in valid_list:
             temp.append((abs(x - avg)) ** 2)
-        return math.sqrt(self.__mean(temp))
+        return math.sqrt(self.__mean(temp, tuple_index))
 
-    def __median(self, a_list):
-        valid_list = sorted(self.__remove_unsortables(a_list))
-        items = len(valid_list)
-        if items % 2 == 0:
-            return (valid_list[items / 2 - 1] + valid_list[items / 2]) / 2.0
+    def __median(self, a_list, tuple_index=0):
+        if len(a_list) == 0:
+            return None
+        valid_list = sorted(self.__remove_unsortables(a_list, tuple_index))
+        valid_list = self.unpack(valid_list, tuple_index)
+        count = len(valid_list)
+        if count == 0:
+            return None
+        if count == 1:
+            return valid_list[0]
+        if count % 2 == 0:
+            return (valid_list[int(count / 2) - 1] + valid_list[int(count / 2)]) / 2
         else:
-            return valid_list[items / 2]
+            return valid_list[int((count - 1) / 2)]
+
+    def __mid_between_min_max(self, a_list, tuple_index=0):
+        min = self.extract_value(self.__get_min_tuple(a_list, tuple_index), tuple_index)
+        max = self.extract_value(self.__get_max_tuple(a_list, tuple_index), tuple_index)
+        if max is None:
+            max = min
+        if min is None:
+            min = max
+        if max is None or min is None:
+            return None
+        return (min + max) / 2
+
+    def __furthest(self, a_list, ref_value, tuple_index=0):
+        """
+        Deprecated
+
+        :param a_list:
+        :param ref_value:
+        :param tuple_index:
+        :return:
+        """
+        i = 0
+        max_dev = None
+        max_index = None
+        max_value = None
+        for item in a_list:
+            val = self.extract_value(item, 0)
+            if val is not None:
+                if max_dev is None or abs(ref_value - val) > max_dev:
+                    max_dev = abs(ref_value - val)
+                    max_index = i
+                    max_value = val
+            i += 1
+        return max_value, max_index
 
     @staticmethod
     def unpack(a_list, i):
@@ -1563,9 +1846,9 @@ class FuzzySort():
             new_list.append(item[i])
         return new_list
 
-    def has_unsortables(self, sv_list):
-        for sv in sv_list:
-            if self.__is_unsortable(value):
+    def has_unsortables(self, a_list, tuple_index=0):
+        for item in a_list:
+            if self.__is_unsortable(item, tuple_index):
                 return True
         return False
 
@@ -1574,8 +1857,8 @@ class FuzzySort():
         break_index = len(lo_list)
         full_list = lo_list + hi_list
         prev_val = None
-        max_lo = self.__get_max(lo_list)
-        min_hi = self.__get_min(hi_list)
+        max_lo = self.__get_max_tuple(lo_list)
+        min_hi = self.__get_min_tuple(hi_list)
         print("  ", end="")
         for item in full_list:
             if i == break_index:
@@ -1621,22 +1904,13 @@ class FuzzySort():
                 print(val + " ]" + Color.NORMAL)
             i += 1
 
-# ===================================================================================================================
-#
-# FORMAT STRING PARSER 0.9.4
-#
-# Parses format string with key coded values in dictionary removing unnecessary separators between parsed names
-#
-# (C) 2015  Kati Haapamaki
-#
-# ===================================================================================================================
 
 
-# ------------------------------------------------------------
+# =====================================================================================================
 #
 #   ELEMENT TYPE
 #
-# ------------------------------------------------------------
+# =====================================================================================================
 
 class ElementType():
     KEY = 0
@@ -1649,11 +1923,11 @@ class ElementType():
     BINDOPERATOR = 22
 
 
-# ------------------------------------------------------------
+# =====================================================================================================
 #
 #   CASE
 #
-# ------------------------------------------------------------
+# =====================================================================================================
 
 class Case():
     NONE = 0
@@ -1683,7 +1957,7 @@ class Case():
             pos = Case.find_first_alphanum(string) if case == Case.SENTENCECASE else Case.find_first_alpha(string)
             if pos >= 0:
                 before = string[:pos] if pos > 0 else ""
-                after = string[pos+1:] if len(string) > pos + 1 else ""
+                after = string[pos + 1:] if len(string) > pos + 1 else ""
                 return before + string[pos].upper() + after
             else:
                 return string
@@ -1691,7 +1965,7 @@ class Case():
             prev_c = " "
             new_string = ""
             for c in string:
-                if not prev_c.isalnum() and case == Case.TITLECASE\
+                if not prev_c.isalnum() and case == Case.TITLECASE \
                         or prev_c == " " and case == Case.TITLECASESPACEREQUIRED:
                     new_string = new_string + c.upper()
                 else:
@@ -1747,11 +2021,11 @@ class Case():
         return
 
 
-# ------------------------------------------------------------
+# =====================================================================================================
 #
 #   PARSE MODE
 #
-# ------------------------------------------------------------
+# =====================================================================================================
 
 class ParseMode():
     ALWAYS = 0
@@ -1759,11 +2033,11 @@ class ParseMode():
     IFALL = 2
 
 
-# ------------------------------------------------------------
+# =====================================================================================================
 #
 #   FORMAT STRING ELEMENT
 #
-# ------------------------------------------------------------
+# =====================================================================================================
 
 class FormatStringElement():
     type = ElementType.PLAINTEXT
@@ -1800,19 +2074,22 @@ class FormatStringElement():
         print(s)
 
 
-# ------------------------------------------------------------
+# =====================================================================================================
 #
 #   FORMAT STRING PARSER
 #
-# ------------------------------------------------------------
+# =====================================================================================================
 
 class FormatStringParser():
     """
 
     """
 
-#   INIT
-#
+    # -----------------------------------------------------------------------------------------------------
+    #   INIT
+    #
+    # -----------------------------------------------------------------------------------------------------
+
     _all_keys = []
 
     _key_prefix = "%"
@@ -1874,9 +2151,10 @@ class FormatStringParser():
                 if not self._has_item(key, self._all_keys):
                     self._all_keys.append(key)
 
-
-#   PARSE
-#
+                    # -----------------------------------------------------------------------------------------------------
+                    #   PARSE
+                    #
+                    # -----------------------------------------------------------------------------------------------------
 
     def parse(self, values, format_string):
         """
@@ -1895,7 +2173,7 @@ class FormatStringParser():
 
         if len(parsed_list) > 0:
             passed_keys = parsed_list[0].parsed_values
-            #print(passed_keys)
+            # print(passed_keys)
 
         return self._make_string_from_list(parsed_list)
 
@@ -1924,22 +2202,22 @@ class FormatStringParser():
         """
         new_case = Case.NONE
         if format_string:
-                c = format_string[0:2]
-                if c == self._uppercase_operator:
-                    new_case = Case.UPPERCASE
-                elif c == self._sentencecase_operator:
-                    new_case = Case.SENTENCECASE
-                elif c == self._sentencecase_numskip_operator:
-                    new_case = Case.SENTENCECASENUMSKIP
-                elif c == self._titlecase_operator:
-                    new_case = Case.TITLECASE
-                elif c == self._titlecasenumskip_operator:
-                    new_case = Case.TITLECASESPACEREQUIRED
-                elif c == self._lowercase_operator:
-                    new_case = Case.LOWERCASE
-                if new_case != Case.NONE:
-                    format_string = format_string[2:]
-                    case = new_case
+            c = format_string[0:2]
+            if c == self._uppercase_operator:
+                new_case = Case.UPPERCASE
+            elif c == self._sentencecase_operator:
+                new_case = Case.SENTENCECASE
+            elif c == self._sentencecase_numskip_operator:
+                new_case = Case.SENTENCECASENUMSKIP
+            elif c == self._titlecase_operator:
+                new_case = Case.TITLECASE
+            elif c == self._titlecasenumskip_operator:
+                new_case = Case.TITLECASESPACEREQUIRED
+            elif c == self._lowercase_operator:
+                new_case = Case.LOWERCASE
+            if new_case != Case.NONE:
+                format_string = format_string[2:]
+                case = new_case
 
         if case == Case.SENTENCECASENUMSKIP or case == Case.SENTENCECASE:
             sentence_case = case
@@ -1961,11 +2239,11 @@ class FormatStringParser():
                     middle = format_string[start_pos + 1:end_pos] if end_pos - start_pos >= 2 else ""
                     after = format_string[end_pos + 1:] if end_pos < len(format_string) - 1 else ""
 
-                    #print("//" + before + "//" + middle + "//" + after + "//")
+                    # print("//" + before + "//" + middle + "//" + after + "//")
                     recursion = self._recurse_enclosures_and_parse(values, before, mode, sentence_case) \
-                        + self._collect(self._recurse_enclosures_and_parse(values, middle, enclosed_mode, case),
-                                        enclosed_mode) \
-                        + self._recurse_enclosures_and_parse(values, after, mode, case)
+                                + self._collect(self._recurse_enclosures_and_parse(values, middle, enclosed_mode, case),
+                                                enclosed_mode) \
+                                + self._recurse_enclosures_and_parse(values, after, mode, case)
 
                     return recursion
 
@@ -2077,7 +2355,6 @@ class FormatStringParser():
 
         return
 
-
     def _get_next_key(self, format_string):
         """
         Searches for the first key in a format string
@@ -2102,20 +2379,21 @@ class FormatStringParser():
                 check_key = self._key_prefix + key.lower()
                 found_pos = check_string.find(check_key, 0)
                 if found_pos >= 0 and (found_pos < lowest_index or not any_found):
-                    char_before = format_string[found_pos-1] if found_pos > 0 else ""
+                    char_before = format_string[found_pos - 1] if found_pos > 0 else ""
                     if char_before != self._escape_char:
                         lowest_index = found_pos
                         any_found = True
                         found_true_key = key
-                        found_formatted_key = format_string[lowest_index:lowest_index+len(check_key)]
+                        found_formatted_key = format_string[lowest_index:lowest_index + len(check_key)]
         if any_found:
             return found_true_key, found_formatted_key[len(self._key_prefix):]
         else:
             return None
 
-
-#   COLLECT / SUPPRESS
-#
+            # -----------------------------------------------------------------------------------------------------
+            #   COLLECT / SUPPRESS
+            #
+            # -----------------------------------------------------------------------------------------------------
 
     def _collect(self, element_list, mode=ParseMode.IFANY, case=Case.NONE):
         """
@@ -2130,7 +2408,6 @@ class FormatStringParser():
         any_parsed = False
         parsed_keys = dict()
 
-
         # change prefix and suffixes to separators if they are no longer in the beginning or in the end
         element_list = self._fix_separators(element_list)
 
@@ -2141,13 +2418,13 @@ class FormatStringParser():
 
         for element in element_list:
             if index == 0:
-                first_item_case = element.case # will be used for the whole string if sentence case...
+                first_item_case = element.case  # will be used for the whole string if sentence case...
 
             if element.parsed:
                 any_parsed = True
 
             if element.type == ElementType.PARSED:
-                 parsed_keys.update(element.parsed_values)
+                parsed_keys.update(element.parsed_values)
 
             if (element.parsed or element.type == ElementType.PLAINTEXT) and element.value:
                 string_list.append(element.value)
@@ -2158,12 +2435,12 @@ class FormatStringParser():
                 found_more = False
 
                 if len(element_list) > index + 2:
-                    if element_list[index+1].type == ElementType.SEPARATOR:
+                    if element_list[index + 1].type == ElementType.SEPARATOR:
                         separator1 = element_list[index + 1]
                     index2 = index + 1
 
                     # look for the next parsed value to determine what separators to use
-                    for element2 in element_list[index+1:]:
+                    for element2 in element_list[index + 1:]:
                         if (element2.parsed or element2.type == ElementType.PLAINTEXT) and element2.value:
                             found_more = True
                             if index2 > index + 2 and element_list[index2 - 1].type == ElementType.SEPARATOR:
@@ -2175,6 +2452,7 @@ class FormatStringParser():
 
                     if separator and found_more:
                         string_list.append(separator.value)
+
 
             elif element.type == ElementType.SEPARATOR:
                 pass
@@ -2199,7 +2477,7 @@ class FormatStringParser():
                 # execute sentence case conversion here - later than other conversions,
                 # because we need completely parsed string to do that
                 if first_item_case == Case.SENTENCECASE or first_item_case == Case.SENTENCECASENUMSKIP:
-                   parsed_string = Case.convert_case(parsed_string, first_item_case)
+                    parsed_string = Case.convert_case(parsed_string, first_item_case)
         else:
             parsed_string = ""
             parsed_keys = dict()
@@ -2240,31 +2518,31 @@ class FormatStringParser():
             skip_this = False
             if not skip_next:
                 if index > 0 and index < len(element_list) - 1 and prev_element:
-                    next_element = element_list[index+1]
+                    next_element = element_list[index + 1]
                     if element.type == ElementType.OPTIONOPERATOR:
                         if prev_element.parsed and next_element.parsed:
                             if not prev_element.value:
                                 del new_element_list[-1]  # if prev item empty, delete along operator
                                 skip_this = True
                             else:
-                                skip_next = skip_this = True    # or else omit next, along operator
+                                skip_next = skip_this = True  # or else omit next, along operator
                     elif element.type == ElementType.BINDOPERATOR:
                         if element.value == self._bind_right_operator:
                             if index > 0 and index < len(element_list) - 1 \
                                     and not prev_element.value \
                                     and prev_element.parsed \
                                     and next_element.parsed:
-                                skip_next = skip_this = True # delete next
+                                skip_next = skip_this = True  # delete next
                         if element.value == self._bind_left_operator:
                             if index > 0 and index < len(element_list) - 1 \
                                     and not next_element.value \
                                     and prev_element.parsed \
                                     and next_element.parsed:
-                                del new_element_list[-1] # delete previous
+                                del new_element_list[-1]  # delete previous
                                 skip_this = True
                 if not skip_this:
-                        new_element_list.append(element)
-                        prev_element = element
+                    new_element_list.append(element)
+                    prev_element = element
             else:
                 skip_next = False
 
@@ -2272,9 +2550,10 @@ class FormatStringParser():
 
         return new_element_list
 
-
-#   MISC
-#
+    # -----------------------------------------------------------------------------------------------------
+    #   MISC
+    #
+    # -----------------------------------------------------------------------------------------------------
 
     @staticmethod
     def _has_item(item, list_):
@@ -2307,7 +2586,7 @@ class FormatStringParser():
         while index < len(string):
             if string[index] == self._escape_char:
                 if index < len(string) - 1:
-                    if string[index+1] != self._escape_char:
+                    if string[index + 1] != self._escape_char:
                         pass
                     else:
                         new_string.append(string[index])
@@ -2361,8 +2640,8 @@ class FormatStringParser():
                 found_enclosing = index, ParseMode.ALWAYS
             if found_enclosing:
                 if index > start_pos:
-                    if format_string[index-1] == self._escape_char:
-                        found_enclosing = None # omit found enclosing if it's followed by escape char
+                    if format_string[index - 1] == self._escape_char:
+                        found_enclosing = None  # omit found enclosing if it's followed by escape char
                     else:
                         break
                 else:
@@ -2382,7 +2661,7 @@ class FormatStringParser():
         start_pos = enclosing_start[0] + 1
         found_enclosing_end = None
 
-        if len(format_string)- start_pos > 1:
+        if len(format_string) - start_pos > 1:
 
             mode = enclosing_start[1]
             if mode == ParseMode.IFALL:
@@ -2405,13 +2684,13 @@ class FormatStringParser():
                     else:
                         level -= 1
                         if index > start_pos:
-                            if format_string[index-1] == self._escape_char:
-                                level += 1 # was escape, step back
+                            if format_string[index - 1] == self._escape_char:
+                                level += 1  # was escape, step back
                 elif c == ec_start_char:
                     level += 1
                     if index > start_pos:
-                        if format_string[index-1] == self._escape_char:
-                            level -= 1 # was escape, step back
+                        if format_string[index - 1] == self._escape_char:
+                            level -= 1  # was escape, step back
 
                 index += 1
 

@@ -1,0 +1,78 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: GedcomOptions\n"
+"POT-Creation-Date: 2017-01-14 16:34+0200\n"
+"PO-Revision-Date: 2017-01-14 16:40+0200\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: fi_FI\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 1.8.11\n"
+"X-Poedit-Basepath: .\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Poedit-SourceCharset: UTF-8\n"
+"X-Poedit-SearchPath-0: GedcomOptions.gpr.py\n"
+"X-Poedit-SearchPath-1: GedcomOptions.py\n"
+
+#: GedcomOptions.gpr.py:32 GedcomOptions.gpr.py:33
+msgid "GEDCOM With Extra Options"
+msgstr "GEDCOM lisäasetuksilla"
+
+#: GedcomOptions.gpr.py:34
+msgid "Expansion to default GedCom export module."
+msgstr "Gedcom-viejän laajennus"
+
+#: GedcomOptions.gpr.py:41
+msgid "GEDCOM Options"
+msgstr "GEDCOM lisäasetukset"
+
+#: GedcomOptions.py:855
+msgid "Smart sort children"
+msgstr "Älykäs lasten lajittelu"
+
+#: GedcomOptions.py:857
+msgid "Smart sort events"
+msgstr "Älykäs tapahtumien lajittelu"
+
+#: GedcomOptions.py:859
+msgid "Reverse place names"
+msgstr "Käänteinen paikannimien järjestys"
+
+#: GedcomOptions.py:862
+msgid "Avoid repetition in place names"
+msgstr "Vältä toistoa paikannimissä"
+
+#: GedcomOptions.py:864
+msgid "Extended addresses"
+msgstr "Laajennetut osoitetiedot"
+
+#: GedcomOptions.py:866
+msgid "Omit addresses without info in addition to place name"
+msgstr "Hylkää osoitteet, joissa ei ole lisäsisältöä paikannimiin nähden"
+
+#: GedcomOptions.py:868
+msgid "Omit neighborhood from addresses"
+msgstr "Jätä kulmakunta pois osoitteista"
+
+#: GedcomOptions.py:870
+msgid "Inherit missing coordinates from higher in place hierarchy"
+msgstr "Periytä puuttuvat koordinaatit paikkahierarkiasta"
+
+#: GedcomOptions.py:872
+msgid "Include TNG specific place tags"
+msgstr "Sisällytä TNG:ssä käytettävät paikkoihin liittyvät lisäkentät"
+
+#: GedcomOptions.py:874
+msgid "Matro- and patronymics as part of first names"
+msgstr "Siirrä matro- ja patronyymit etunimiin kuuluviksi"
+
+#: GedcomOptions.py:936
+#, python-format
+msgid "Could not create %s"
+msgstr "Ei voi luoda %s"
+
+#: GedcomOptions.py:939
+msgid "Export failed"
+msgstr "Vienti epäonnistui"
